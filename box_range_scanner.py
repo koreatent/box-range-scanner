@@ -115,8 +115,9 @@ def run_scan(tickers=None, progress_callback=None, score_threshold=0):
     end   = get_date(1)
     total = len(tickers)
 
-    results    = []
-    fail_count = 0
+    results         = []
+    fail_count      = 0
+    processed_count = 0   # 데이터 정상 수신 종목 수 (threshold 통과 여부 무관)
 
     for i, t in enumerate(tickers):
         name = t
@@ -134,10 +135,12 @@ def run_scan(tickers=None, progress_callback=None, score_threshold=0):
                 fail_count += 1
                 continue
 
+            processed_count += 1  # 데이터 정상 수신
+
             score, reason = analyze_box(df)
 
             if score < score_threshold:
-                continue
+                continue  # threshold 미달 → 후보 제외, processed는 유지
 
             signal = get_breakout_signal(df)
             volume = int(df['거래량'].iloc[-1]) if '거래량' in df.columns else 0
@@ -156,8 +159,8 @@ def run_scan(tickers=None, progress_callback=None, score_threshold=0):
 
     if not results:
         empty = pd.DataFrame(columns=["종목코드", "종목명", "점수", "거래량", "이유", "돌파신호"])
-        return empty, 0, fail_count
+        return empty, processed_count, fail_count
 
     result_df = pd.DataFrame(results)
     result_df = result_df.sort_values("점수", ascending=False).reset_index(drop=True)
-    return result_df, len(results), fail_count
+    return result_df, processed_count, fail_count

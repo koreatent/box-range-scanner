@@ -4,9 +4,10 @@ streamlit_app.py — v8.1
 
 변경 이력:
   v8.1 - get_kospi_tickers() → ohlcv_by_ticker 기반으로 전환
-         run_scan() 반환값 변경에 맞게 UI 수정 (df, success_count, fail_count)
-         결과 요약에 총 종목 / 정상 처리 / 실패 / 후보 수 표시
-         fallback 실패 시 "제한 모드" 안내 메시지 추가
+         run_scan() 반환값: (DataFrame, processed_count, fail_count)
+         processed_count = 데이터 정상 수신 수 (threshold 통과 여부 무관)
+         결과 요약 4개 지표: 총 대상 / 정상 처리 / 실패 / 박스권 후보
+         전체 스캔 실패 시 제한 모드(fallback 15종목) 자동 전환
 """
 
 import streamlit as st
@@ -85,17 +86,17 @@ if st.button(btn_label, use_container_width=True):
             status_text.text(f"({current} / {total}) {name}")
 
         try:
-            df, success_count, fail_count = run_scan(
+            df, processed_count, fail_count = run_scan(
                 tickers=tickers,
                 progress_callback=update_progress,
                 score_threshold=FULL_SCORE_THRESHOLD,
             )
             progress_bar.progress(1.0)
             status_text.text(f"스캔 완료")
-            st.session_state["result"]        = df
-            st.session_state["scan_total"]    = total
-            st.session_state["scan_success"]  = success_count
-            st.session_state["scan_fail"]     = fail_count
+            st.session_state["result"]          = df
+            st.session_state["scan_total"]      = total
+            st.session_state["scan_processed"]  = processed_count
+            st.session_state["scan_fail"]       = fail_count
             st.session_state["scan_mode"]     = "full"
             st.session_state["scan_fallback"] = is_fallback
         except Exception as e:
@@ -116,14 +117,14 @@ if st.button(btn_label, use_container_width=True):
                 except Exception:
                     tickers = FALLBACK_TICKERS
 
-                df, success_count, fail_count = run_scan(
+                df, processed_count, fail_count = run_scan(
                     tickers=tickers,
                     score_threshold=FAST_SCORE_THRESHOLD,
                 )
-                st.session_state["result"]        = df
-                st.session_state["scan_total"]    = len(tickers)
-                st.session_state["scan_success"]  = success_count
-                st.session_state["scan_fail"]     = fail_count
+                st.session_state["result"]         = df
+                st.session_state["scan_total"]     = len(tickers)
+                st.session_state["scan_processed"] = processed_count
+                st.session_state["scan_fail"]      = fail_count
                 st.session_state["scan_mode"]     = "fast"
                 st.session_state["scan_fallback"] = False
             except Exception as e:
@@ -134,7 +135,7 @@ if "result" in st.session_state:
     df         = st.session_state["result"]
     mode       = st.session_state.get("scan_mode", "fast")
     scanned    = st.session_state.get("scan_total", 0)
-    success    = st.session_state.get("scan_success", 0)
+    processed  = st.session_state.get("scan_processed", 0)
     fail       = st.session_state.get("scan_fail", 0)
     is_fb      = st.session_state.get("scan_fallback", False)
 
@@ -143,9 +144,9 @@ if "result" in st.session_state:
     # 결과 요약
     found = len(df)
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("총 대상", f"{scanned}개")
-    col2.metric("정상 처리", f"{success + (scanned - success - fail)}개")
-    col3.metric("실패/스킵", f"{fail}개")
+    col1.metric("총 대상",    f"{scanned}개")
+    col2.metric("정상 처리",  f"{processed}개")
+    col3.metric("실패/스킵",  f"{fail}개")
     col4.metric("박스권 후보", f"{found}개")
 
     if df.empty:
