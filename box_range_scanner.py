@@ -1,11 +1,12 @@
 """
-box_range_scanner.py — v8.0
+box_range_scanner.py — v8.1
 박스권 탐지 모듈
 
 변경 이력:
-  v8.0 - 코스피 전체 ticker 수집 함수 추가
-         run_scan에 progress_callback 파라미터 추가 (기존 호환 유지)
-         박스권 조건 만족 종목만 반환 (score_threshold 적용)
+  v8.1 - get_kospi_tickers() 재구현
+         get_market_ticker_list() 사용 중단
+         get_market_ohlcv_by_ticker() 기반으로 ticker 추출 방식으로 전환
+         get_nearest_business_date() 추가 (최근 영업일 + OHLCV 동시 반환)
 """
 
 from pykrx import stock
@@ -64,18 +65,33 @@ def get_breakout_signal(df):
         return "⚪ 박스권중립"
 
 
-def get_kospi_tickers():
-    """코스피 전체 ticker 리스트 반환 (최근 영업일 기준)"""
-    today = datetime.today()
-    for offset in range(7):
-        date_str = (today - timedelta(days=offset)).strftime("%Y%m%d")
+def get_nearest_business_date(max_days=7):
+    """최근 영업일 날짜 문자열과 당일 코스피 전체 OHLCV DataFrame 반환"""
+    for i in range(1, max_days + 1):
+        d = (datetime.today() - timedelta(days=i)).strftime("%Y%m%d")
         try:
-            tickers = stock.get_market_ticker_list(date_str, market="KOSPI")
-            if tickers and len(tickers) > 0:
-                return list(tickers)
+            df = stock.get_market_ohlcv_by_ticker(d, market="KOSPI")
+            if df is not None and not df.empty:
+                return d, df
         except Exception:
             continue
-    return []
+    return None, None
+
+
+def get_kospi_tickers():
+    """
+    코스피 전체 ticker 리스트 반환
+
+    get_market_ticker_list() 사용 중단 (KRX 마스터 API 불안정)
+    → get_market_ohlcv_by_ticker() 결과 index에서 ticker 추출
+    """
+    _, df = get_nearest_business_date()
+
+    if df is None or df.empty:
+        return []
+
+    tickers = [str(idx).zfill(6) for idx in df.index.tolist()]
+    return tickers
 
 
 def run_scan(tickers=None, progress_callback=None, score_threshold=0):
@@ -99,14 +115,15 @@ def run_scan(tickers=None, progress_callback=None, score_threshold=0):
     end   = get_date(1)
     total = len(tickers)
 
-    results = []
+    results    = []
+    fail_count = 0
+
     for i, t in enumerate(tickers):
-        # 종목명 먼저 시도 (진행바에 표시)
-        name = ""
+        name = t
         try:
             name = stock.get_market_ticker_name(t)
         except Exception:
-            name = t
+            pass
 
         if progress_callback:
             progress_callback(i + 1, total, name)
@@ -114,6 +131,7 @@ def run_scan(tickers=None, progress_callback=None, score_threshold=0):
         try:
             df = stock.get_market_ohlcv_by_date(start, end, t)
             if df is None or df.empty:
+                fail_count += 1
                 continue
 
             score, reason = analyze_box(df)
@@ -133,11 +151,13 @@ def run_scan(tickers=None, progress_callback=None, score_threshold=0):
                 "돌파신호": signal,
             })
         except Exception:
+            fail_count += 1
             continue
 
     if not results:
-        return pd.DataFrame(columns=["종목코드", "종목명", "점수", "거래량", "이유", "돌파신호"])
+        empty = pd.DataFrame(columns=["종목코드", "종목명", "점수", "거래량", "이유", "돌파신호"])
+        return empty, 0, fail_count
 
     result_df = pd.DataFrame(results)
     result_df = result_df.sort_values("점수", ascending=False).reset_index(drop=True)
-    return result_df
+    return result_df, len(results), fail_count

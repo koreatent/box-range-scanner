@@ -1,11 +1,12 @@
 """
-streamlit_app.py — v8.0
+streamlit_app.py — v8.1
 박스권 스캐너 컨트롤룸
 
 변경 이력:
-  v8.0 - 스캔 모드 선택 추가 (빠른 스캔 / 코스피 전체 스캔)
-         전체 스캔 시 진행바 + 결과 요약 표시
-         기존 빠른 스캔 모드 완전 보존
+  v8.1 - get_kospi_tickers() → ohlcv_by_ticker 기반으로 전환
+         run_scan() 반환값 변경에 맞게 UI 수정 (df, success_count, fail_count)
+         결과 요약에 총 종목 / 정상 처리 / 실패 / 후보 수 표시
+         fallback 실패 시 "제한 모드" 안내 메시지 추가
 """
 
 import streamlit as st
@@ -19,8 +20,8 @@ FALLBACK_TICKERS = [
     "105560", "055550", "017670", "015760", "034220",
     "096770", "003490", "000270", "090430", "086790",
 ]
-FAST_SCORE_THRESHOLD  = 0   # 빠른 스캔: 전부 표시
-FULL_SCORE_THRESHOLD  = 60  # 전체 스캔: 60점 이상만
+FAST_SCORE_THRESHOLD = 0   # 빠른 스캔: 전부 표시
+FULL_SCORE_THRESHOLD = 60  # 전체 스캔: 60점 이상만
 # ----------------------------------------------------------
 
 
@@ -64,62 +65,88 @@ if st.button(btn_label, use_container_width=True):
             tickers = get_kospi_tickers()
 
         if not tickers:
-            st.error("코스피 종목 목록을 가져올 수 없습니다. 잠시 후 다시 시도해주세요.")
+            st.warning("코스피 전체 조회 실패 — 제한 모드로 전환됩니다.")
+            tickers = FALLBACK_TICKERS
+
+        total = len(tickers)
+        is_fallback = (total == len(FALLBACK_TICKERS) and tickers == FALLBACK_TICKERS)
+
+        if is_fallback:
+            st.info(f"제한 모드: {total}개 기본 종목으로 스캔합니다.")
         else:
-            total = len(tickers)
             st.info(f"코스피 {total}개 종목 스캔 시작")
 
-            progress_bar  = st.progress(0)
-            status_text   = st.empty()
+        progress_bar = st.progress(0)
+        status_text  = st.empty()
 
-            def update_progress(current, total, name):
-                ratio = current / total
-                progress_bar.progress(ratio)
-                status_text.text(f"({current} / {total}) {name}")
+        def update_progress(current, total, name):
+            ratio = current / total
+            progress_bar.progress(ratio)
+            status_text.text(f"({current} / {total}) {name}")
 
-            try:
-                df = run_scan(
-                    tickers=tickers,
-                    progress_callback=update_progress,
-                    score_threshold=FULL_SCORE_THRESHOLD,
-                )
-                progress_bar.progress(1.0)
-                status_text.text(f"스캔 완료 — {total}개 종목 검색")
-                st.session_state["result"]       = df
-                st.session_state["scan_total"]   = total
-                st.session_state["scan_mode"]    = "full"
-            except Exception as e:
-                st.error(f"스캔 중 오류: {e}")
+        try:
+            df, success_count, fail_count = run_scan(
+                tickers=tickers,
+                progress_callback=update_progress,
+                score_threshold=FULL_SCORE_THRESHOLD,
+            )
+            progress_bar.progress(1.0)
+            status_text.text(f"스캔 완료")
+            st.session_state["result"]        = df
+            st.session_state["scan_total"]    = total
+            st.session_state["scan_success"]  = success_count
+            st.session_state["scan_fail"]     = fail_count
+            st.session_state["scan_mode"]     = "full"
+            st.session_state["scan_fallback"] = is_fallback
+        except Exception as e:
+            st.error(f"스캔 중 오류: {e}")
 
     else:
         # ── 빠른 스캔 ─────────────────────────────────────
         with st.spinner("분석 중..."):
             try:
-                # 거래량 상위 top_n 가져오기 시도, 실패 시 fallback
                 today_str = (datetime.today() - timedelta(days=1)).strftime("%Y%m%d")
                 try:
                     top_df = stock.get_market_trading_volume_by_ticker(today_str, market="KOSPI")
                     if top_df is not None and not top_df.empty:
                         tickers = top_df.sort_values("거래량", ascending=False).head(top_n).index.tolist()
+                        tickers = [str(t).zfill(6) for t in tickers]
                     else:
                         tickers = FALLBACK_TICKERS
                 except Exception:
                     tickers = FALLBACK_TICKERS
 
-                df = run_scan(tickers=tickers, score_threshold=FAST_SCORE_THRESHOLD)
-                st.session_state["result"]     = df
-                st.session_state["scan_total"] = len(tickers)
-                st.session_state["scan_mode"]  = "fast"
+                df, success_count, fail_count = run_scan(
+                    tickers=tickers,
+                    score_threshold=FAST_SCORE_THRESHOLD,
+                )
+                st.session_state["result"]        = df
+                st.session_state["scan_total"]    = len(tickers)
+                st.session_state["scan_success"]  = success_count
+                st.session_state["scan_fail"]     = fail_count
+                st.session_state["scan_mode"]     = "fast"
+                st.session_state["scan_fallback"] = False
             except Exception as e:
                 st.error(f"오류 발생: {e}")
 
 # -- 결과 표시 ----------------------------------------------
 if "result" in st.session_state:
-    df        = st.session_state["result"]
-    mode      = st.session_state.get("scan_mode", "fast")
-    scanned   = st.session_state.get("scan_total", 0)
+    df         = st.session_state["result"]
+    mode       = st.session_state.get("scan_mode", "fast")
+    scanned    = st.session_state.get("scan_total", 0)
+    success    = st.session_state.get("scan_success", 0)
+    fail       = st.session_state.get("scan_fail", 0)
+    is_fb      = st.session_state.get("scan_fallback", False)
 
     st.divider()
+
+    # 결과 요약
+    found = len(df)
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("총 대상", f"{scanned}개")
+    col2.metric("정상 처리", f"{success + (scanned - success - fail)}개")
+    col3.metric("실패/스킵", f"{fail}개")
+    col4.metric("박스권 후보", f"{found}개")
 
     if df.empty:
         if mode == "full":
@@ -127,12 +154,12 @@ if "result" in st.session_state:
         else:
             st.warning("결과 없음 — 평일 오후 4시 이후 다시 실행해보세요.")
     else:
-        # 결과 요약
-        found = len(df)
-        if mode == "full":
+        if mode == "full" and not is_fb:
             st.success(f"코스피 {scanned}개 중 **{found}개** 박스권 후보 발견 (60점 이상)")
+        elif is_fb:
+            st.info(f"제한 모드 — {scanned}개 종목 중 **{found}개** 후보")
         else:
-            st.success(f"후보군 {scanned}개 중 **{found}개** 분석 완료")
+            st.success(f"후보군 {scanned}개 분석 완료 — **{found}개** 결과")
 
         st.subheader("박스권 후보")
         st.caption("점수가 높을수록 박스권 가능성이 높습니다. (100점 최고)")
