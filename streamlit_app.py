@@ -1,6 +1,5 @@
 """
-streamlit_app.py - 박스권 스캐너 컨트롤룸 v7.0
-실행: streamlit run streamlit_app.py
+streamlit_app.py - 박스권 스캐너 컨트롤룸 v7.2
 """
 import streamlit as st
 import pandas as pd
@@ -13,9 +12,9 @@ matplotlib.rcParams['font.family'] = 'Malgun Gothic'
 matplotlib.rcParams['axes.unicode_minus'] = False
 
 try:
-    from modules.box_range_scanner import run_scan, get_top_marketcap_tickers
+    from modules.box_range_scanner import run_scan, get_top_volume_tickers
 except ModuleNotFoundError:
-    from box_range_scanner import run_scan, get_top_marketcap_tickers
+    from box_range_scanner import run_scan, get_top_volume_tickers
 
 SIGNAL_EMOJI = {
     "돌파 임박": "🟢",
@@ -36,15 +35,13 @@ def get_ohlcv(ticker_code: str):
     except Exception:
         return None
 
-# ── 페이지 설정 ──────────────────────────────────────────
 st.set_page_config(page_title="박스권 스캐너", page_icon="📦", layout="wide")
-st.title("📦 박스권 스캐너 컨트롤룸 v7.0")
-st.caption("시가총액 상위 종목을 자동으로 스캔합니다.")
+st.title("📦 박스권 스캐너 컨트롤룸 v7.2")
+st.caption("거래량 상위 종목을 자동으로 스캔합니다.")
 
-# ── 사이드바 ─────────────────────────────────────────────
 with st.sidebar:
     st.header("⚙️ 설정")
-    top_n = st.slider("스캔 종목 수 (시가총액 상위)", min_value=20, max_value=200, value=100, step=10)
+    top_n = st.slider("스캔 종목 수 (거래량 상위)", min_value=20, max_value=200, value=100, step=10)
     extra_raw = st.text_area(
         "추가 종목코드 입력 (줄바꿈 또는 쉼표로 구분)",
         placeholder="예)\n323410\n207940",
@@ -58,15 +55,13 @@ with st.sidebar:
         default=["돌파 임박", "관찰 필요", "신호 약함", "이탈 주의"],
     )
     st.divider()
-    st.caption("코스피 + 코스닥 시가총액 기준 자동 정렬")
+    st.caption("코스피 + 코스닥 거래량 기준 자동 정렬")
 
-# ── 종목 풀 구성 ─────────────────────────────────────────
 extra_tickers = []
 if extra_raw.strip():
     raw_list = extra_raw.replace(",", "\n").splitlines()
     extra_tickers = [t.strip() for t in raw_list if t.strip().isdigit()]
 
-# ── 버튼 ─────────────────────────────────────────────────
 col1, col2 = st.columns([3, 1])
 with col1:
     run_btn = st.button("🔍 박스권 스캔 시작", use_container_width=True)
@@ -78,22 +73,26 @@ if clear_btn:
     st.rerun()
 
 if run_btn:
-    # 종목 풀 생성
-    with st.spinner("시가총액 상위 종목 목록 가져오는 중..."):
-        auto_tickers = get_top_marketcap_tickers(top_n)
+    with st.spinner("거래량 상위 종목 목록 가져오는 중..."):
+        auto_tickers, ticker_status = get_top_volume_tickers(top_n)
+
+    # 상태 메시지
+    if ticker_status.startswith("ok:"):
+        date_used = ticker_status.split(":")[1]
+        st.success(f"✅ 거래량 데이터 정상 조회 ({date_used} 기준) — {len(auto_tickers)}개 종목")
+    else:
+        st.error("❌ 거래량 데이터 조회 실패 → 기본 15종목으로 대체 (평일 장 마감 후 재시도 권장)")
 
     all_tickers = list(dict.fromkeys(auto_tickers + extra_tickers))
     total = len(all_tickers)
 
-    st.info(f"📋 스캔 대상: {total}개 종목 (시가총액 자동 {len(auto_tickers)}개 + 직접 입력 {len(extra_tickers)}개)")
+    st.info(f"📋 스캔 대상: {total}개 종목 (거래량 자동 {len(auto_tickers)}개 + 직접 입력 {len(extra_tickers)}개)")
 
-    # 진행바 UI
-    progress_bar  = st.progress(0)
-    status_text   = st.empty()
+    progress_bar = st.progress(0)
+    status_text  = st.empty()
 
     def on_progress(current, total, name):
-        pct = current / total
-        progress_bar.progress(pct)
+        progress_bar.progress(current / total)
         status_text.text(f"분석 중... ({current}/{total}) {name}")
 
     try:
@@ -105,7 +104,6 @@ if run_btn:
     except Exception as e:
         st.error(f"오류 발생: {e}")
 
-# ── 결과 ─────────────────────────────────────────────────
 if "result" in st.session_state:
     df_all     = st.session_state["result"]
     scanned_at = st.session_state.get("scanned_at", "-")

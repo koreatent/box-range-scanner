@@ -1,55 +1,48 @@
 """
-box_range_scanner.py v7.0
-- 시가총액 상위 N개 자동 종목 생성
-- 돌파신호 + 이유 + 거래량 포함
+box_range_scanner.py v7.2
+- 시가총액 기준 → 거래량 기준으로 후보 생성 변경
 """
 
 from pykrx import stock
 import pandas as pd
 from datetime import datetime, timedelta
 
+FALLBACK_TICKERS = [
+    "005930", "000660", "035420", "051910", "068270",
+    "105560", "055550", "017670", "015760", "034220",
+    "096770", "003490", "000270", "090430", "086790"
+]
+
 
 def get_date(days=0):
     return (datetime.today() - timedelta(days=days)).strftime("%Y%m%d")
 
 
-def get_top_marketcap_tickers(top_n=100):
+def get_top_volume_tickers(top_n=100):
     """
-    코스피 + 코스닥 시가총액 상위 top_n 종목 반환
-    캐싱: 당일 1회만 조회
+    코스피 + 코스닥 거래량 상위 top_n 종목 반환
+    반환값: (tickers: list, status: str)
+      status = "ok:{date}" | "fallback_default"
     """
-    today = datetime.today().strftime("%Y%m%d")
-
-    try:
-        # 코스피
-        kospi = stock.get_market_cap(today, market="KOSPI")
-        # 코스닥
-        kosdaq = stock.get_market_cap(today, market="KOSDAQ")
-
-        combined = pd.concat([kospi, kosdaq])
-        combined = combined[combined["시가총액"] > 0]
-        combined = combined.sort_values("시가총액", ascending=False)
-
-        tickers = combined.index.tolist()[:top_n]
-        return tickers
-
-    except Exception:
-        # 조회 실패 시 전일 날짜로 재시도
+    # 최근 영업일 순서로 시도 (오늘 포함 최대 5일 전까지)
+    for days_ago in range(0, 6):
+        target = (datetime.today() - timedelta(days=days_ago)).strftime("%Y%m%d")
         try:
-            prev = (datetime.today() - timedelta(days=3)).strftime("%Y%m%d")
-            kospi  = stock.get_market_cap(prev, market="KOSPI")
-            kosdaq = stock.get_market_cap(prev, market="KOSDAQ")
+            kospi  = stock.get_market_ohlcv(target, market="KOSPI")
+            kosdaq = stock.get_market_ohlcv(target, market="KOSDAQ")
+
             combined = pd.concat([kospi, kosdaq])
-            combined = combined[combined["시가총액"] > 0]
-            combined = combined.sort_values("시가총액", ascending=False)
-            return combined.index.tolist()[:top_n]
+            combined = combined[combined["거래량"] > 0]
+            combined = combined.sort_values("거래량", ascending=False)
+
+            tickers = combined.index.tolist()[:top_n]
+            if len(tickers) >= 10:
+                return tickers, f"ok:{target}"
         except Exception:
-            # 최후 fallback: 기본 15종목
-            return [
-                "005930", "000660", "035420", "051910", "068270",
-                "105560", "055550", "017670", "015760", "034220",
-                "096770", "003490", "000270", "090430", "086790"
-            ]
+            continue
+
+    # 최후 fallback
+    return FALLBACK_TICKERS, "fallback_default"
 
 
 def detect_breakout_signal(df):
@@ -135,17 +128,12 @@ def analyze_box(df):
 
 
 def run_scan(tickers, progress_callback=None):
-    """
-    박스권 스캔 실행
-    progress_callback(current, total, name): 진행 상황 콜백 (옵션)
-    """
     start = get_date(90)
     end   = get_date(1)
     total = len(tickers)
 
     results = []
     for i, t in enumerate(tickers):
-        name = ""
         try:
             name = stock.get_market_ticker_name(t) or t
             if progress_callback:
