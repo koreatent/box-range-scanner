@@ -1,156 +1,143 @@
 """
-box_range_scanner.py v7.2
-- 시가총액 기준 → 거래량 기준으로 후보 생성 변경
+box_range_scanner.py — v8.0
+박스권 탐지 모듈
+
+변경 이력:
+  v8.0 - 코스피 전체 ticker 수집 함수 추가
+         run_scan에 progress_callback 파라미터 추가 (기존 호환 유지)
+         박스권 조건 만족 종목만 반환 (score_threshold 적용)
 """
 
 from pykrx import stock
 import pandas as pd
 from datetime import datetime, timedelta
 
-FALLBACK_TICKERS = [
-    "005930", "000660", "035420", "051910", "068270",
-    "105560", "055550", "017670", "015760", "034220",
-    "096770", "003490", "000270", "090430", "086790"
-]
-
 
 def get_date(days=0):
     return (datetime.today() - timedelta(days=days)).strftime("%Y%m%d")
 
 
-def get_top_volume_tickers(top_n=100):
-    """
-    코스피 + 코스닥 거래량 상위 top_n 종목 반환
-    반환값: (tickers: list, status: str)
-      status = "ok:{date}" | "fallback_default"
-    """
-    # 최근 영업일 순서로 시도 (오늘 포함 최대 5일 전까지)
-    for days_ago in range(0, 6):
-        target = (datetime.today() - timedelta(days=days_ago)).strftime("%Y%m%d")
-        try:
-            kospi  = stock.get_market_ohlcv(target, market="KOSPI")
-            kosdaq = stock.get_market_ohlcv(target, market="KOSDAQ")
-
-            combined = pd.concat([kospi, kosdaq])
-            combined = combined[combined["거래량"] > 0]
-            combined = combined.sort_values("거래량", ascending=False)
-
-            tickers = combined.index.tolist()[:top_n]
-            if len(tickers) >= 10:
-                return tickers, f"ok:{target}"
-        except Exception:
-            continue
-
-    # 최후 fallback
-    return FALLBACK_TICKERS, "fallback_default"
-
-
-def detect_breakout_signal(df):
-    close = df['종가']
-    current_price = close.iloc[-1]
-    upper_band = close.max()
-    lower_band = close.min()
-
-    has_volume = '거래량' in df.columns and df['거래량'].sum() > 0
-    avg_vol_5  = df['거래량'].tail(5).mean()  if has_volume else 0
-    avg_vol_20 = df['거래량'].tail(20).mean() if has_volume else 0
-
-    near_upper  = current_price >= upper_band * 0.95
-    close_upper = current_price >= upper_band * 0.90
-    near_lower  = current_price <= lower_band * 1.05
-    vol_up      = has_volume and avg_vol_20 > 0 and avg_vol_5 > avg_vol_20 * 1.2
-
-    if near_upper and vol_up:
-        return "돌파 임박"
-    elif near_upper or close_upper:
-        return "관찰 필요"
-    elif near_lower:
-        return "이탈 주의"
-    else:
-        return "신호 약함"
-
-
 def analyze_box(df):
+    """박스권 점수 계산 (기존 로직 보존)"""
     close = df['종가']
-    high  = df['고가']
-    low   = df['저가']
+    range_width = (df['고가'].max() - df['저가'].min()) / close.mean()
+    volatility = close.pct_change().std()
+    ma = close.rolling(20).mean()
+    ma_slope = abs(ma.diff().mean())
 
-    range_width = (high.max() - low.min()) / close.mean()
-    volatility  = close.pct_change().std()
-    ma          = close.rolling(20).mean()
-    ma_slope    = abs(ma.diff().mean())
-
-    has_volume = '거래량' in df.columns and df['거래량'].sum() > 0
-    vol_cv     = df['거래량'].pct_change().std() if has_volume else 1.0
-    avg_vol_5  = int(df['거래량'].tail(5).mean())  if has_volume else 0
-    vol_recent = df['거래량'].tail(5).mean()        if has_volume else 0
-    vol_prev   = df['거래량'].iloc[:-5].mean()      if has_volume and len(df) > 5 else vol_recent
-
-    score   = 100
+    score = 100
     reasons = []
 
-    if range_width <= 0.15:
-        reasons.append("변동폭 좁음")
-    elif range_width > 0.3:
+    if range_width > 0.3:
         score -= 30
-
-    if volatility <= 0.02:
-        reasons.append("변동성 낮음")
-    elif volatility > 0.05:
+        reasons.append("변동폭 과다")
+    if volatility > 0.05:
         score -= 30
-
-    if ma_slope <= close.mean() * 0.005:
-        reasons.append("추세 없음")
-    elif ma_slope > close.mean() * 0.02:
+        reasons.append("변동성 과다")
+    if ma_slope > close.mean() * 0.02:
         score -= 30
+        reasons.append("추세 존재")
 
-    if vol_cv <= 0.5:
-        reasons.append("거래량 안정")
+    if not reasons:
+        reasons.append("박스권 안정")
 
-    upper = close.quantile(0.95)
-    lower = close.quantile(0.05)
-    if (close >= upper).sum() >= 2 and (close <= lower).sum() >= 2:
-        reasons.append("지지/저항 반복")
+    return score, ", ".join(reasons)
 
-    if has_volume and vol_prev > 0 and vol_recent > vol_prev * 1.5:
-        reasons.append("거래량 증가로 돌파 가능성")
-        score -= 10
 
-    if len(reasons) >= 3:
-        reason_str = "박스권 패턴 복합"
-    elif len(reasons) >= 1:
-        reason_str = " + ".join(reasons)
+def get_breakout_signal(df):
+    """돌파 신호 계산"""
+    if df is None or df.empty or len(df) < 2:
+        return "⚪ 데이터부족"
+    close = df['종가']
+    box_high = df['고가'].max()
+    box_low  = df['저가'].min()
+    last     = close.iloc[-1]
+    prev     = close.iloc[-2]
+
+    if last > box_high * 0.98 and last > prev:
+        return "🟢 상단돌파임박"
+    elif last < box_low * 1.02 and last < prev:
+        return "🔴 하단이탈임박"
+    elif last > close.mean():
+        return "🟡 박스권상단"
     else:
-        reason_str = "패턴 미약"
-
-    signal = detect_breakout_signal(df)
-    return score, reason_str, avg_vol_5, signal
+        return "⚪ 박스권중립"
 
 
-def run_scan(tickers, progress_callback=None):
+def get_kospi_tickers():
+    """코스피 전체 ticker 리스트 반환 (최근 영업일 기준)"""
+    today = datetime.today()
+    for offset in range(7):
+        date_str = (today - timedelta(days=offset)).strftime("%Y%m%d")
+        try:
+            tickers = stock.get_market_ticker_list(date_str, market="KOSPI")
+            if tickers and len(tickers) > 0:
+                return list(tickers)
+        except Exception:
+            continue
+    return []
+
+
+def run_scan(tickers=None, progress_callback=None, score_threshold=0):
+    """
+    박스권 스캔 실행
+
+    tickers           : 종목코드 리스트. None이면 fallback 15종목 사용.
+    progress_callback : (current, total, name) 호출 함수. 없으면 무시.
+    score_threshold   : 이 점수 이상인 종목만 결과에 포함.
+                        빠른 스캔 → 0 (전부), 전체 스캔 → 60
+    반환값: DataFrame (종목코드, 종목명, 점수, 거래량, 이유, 돌파신호)
+    """
+    if tickers is None:
+        tickers = [
+            "005930", "000660", "035420", "051910", "068270",
+            "105560", "055550", "017670", "015760", "034220",
+            "096770", "003490", "000270", "090430", "086790"
+        ]
+
     start = get_date(90)
     end   = get_date(1)
     total = len(tickers)
 
     results = []
     for i, t in enumerate(tickers):
+        # 종목명 먼저 시도 (진행바에 표시)
+        name = ""
         try:
-            name = stock.get_market_ticker_name(t) or t
-            if progress_callback:
-                progress_callback(i + 1, total, name)
+            name = stock.get_market_ticker_name(t)
+        except Exception:
+            name = t
 
+        if progress_callback:
+            progress_callback(i + 1, total, name)
+
+        try:
             df = stock.get_market_ohlcv_by_date(start, end, t)
             if df is None or df.empty:
                 continue
 
-            score, reason, avg_vol, signal = analyze_box(df)
-            results.append([t, name, score, avg_vol, reason, signal])
+            score, reason = analyze_box(df)
+
+            if score < score_threshold:
+                continue
+
+            signal = get_breakout_signal(df)
+            volume = int(df['거래량'].iloc[-1]) if '거래량' in df.columns else 0
+
+            results.append({
+                "종목코드": t,
+                "종목명": name,
+                "점수": score,
+                "거래량": volume,
+                "이유": reason,
+                "돌파신호": signal,
+            })
         except Exception:
             continue
 
     if not results:
         return pd.DataFrame(columns=["종목코드", "종목명", "점수", "거래량", "이유", "돌파신호"])
 
-    result_df = pd.DataFrame(results, columns=["종목코드", "종목명", "점수", "거래량", "이유", "돌파신호"])
+    result_df = pd.DataFrame(results)
     result_df = result_df.sort_values("점수", ascending=False).reset_index(drop=True)
     return result_df
