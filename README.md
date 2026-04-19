@@ -1,4 +1,5 @@
-[README.md](https://github.com/user-attachments/files/26868272/README.md)
+[README.md](https://github.com/user-attachments/files/26868295/README.md)
+
 # 박스권 스캐너 컨트롤룸
 
 한국 주식시장(KOSPI / KOSDAQ)에서 박스권 종목을 자동 탐지하는 스캐너.
@@ -147,6 +148,22 @@ ALL 2770개 중 309개 박스권 후보 (15.6%) | 60 ~ 80점 범위
 | 100점 | 박스권 가능성 매우 높음 |
 | 70점 내외 | 보통 |
 | 40점 이하 | 추세 진행 중 |
+
+---
+
+## ⚠️ 주의사항
+
+| 항목 | 내용 |
+|------|------|
+| requirements 패키지명 | `finance-datareader` (소문자 하이픈) — `FinanceDataReader` 등으로 쓰면 Streamlit Cloud 빌드 실패 |
+| KRX 마스터 API | Streamlit Cloud에서 `get_market_ticker_list()` 사용 불가 → FDR StockListing 기반으로 전환됨 |
+| 제한 모드 편향 | fallback 종목은 시장별 대형주 편향 → 점수 범위 튜닝은 전체 스캔 기준 수치로 확정할 것. 제한 모드 수치는 참고용만 |
+| 주말 / 공휴일 | 데이터 수집 실패 시 fallback으로 자동 전환 (정상 동작) |
+| 코드 복붙 주의 | 코드 복사 시 따옴표가 곱따옴표로 깨질 수 있음 → GitHub에서 직접 파일 다운로드해서 사용할 것 |
+| ALL 스캔 소요 시간 | KOSPI + KOSDAQ 전종목 병합 시 스캔 시간 두 배 증가 (청크 분할로 안정화됨) |
+| partial_results 타입 | 항상 list of dict — DataFrame 직접 저장 금지 |
+| chunk_executing 플래그 | 예외 발생 시 반드시 False 복구 필수. 이 플래그 없이 auto resume 구현 금지 |
+| session_state 영속성 | Streamlit Cloud에서 탭을 닫으면 session_state 초기화됨 — 완전한 영속성 아님 |
 
 ---
 
