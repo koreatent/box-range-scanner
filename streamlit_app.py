@@ -1,13 +1,12 @@
 """
-streamlit_app.py — v8.3
+streamlit_app.py — v8.2
 박스권 스캐너 컨트롤룸
 
 변경 이력:
-  v8.3 - threshold 사이드바 슬라이더 추가 (실시간 조정)
-         스캔 후 후보 비율 자동 계산 → threshold 튜닝 권고 배너 표시
-         20% 초과 → +5 권고 / 10% 미만 → -5 권고
-         제한 모드(fallback)에서도 동일 튜닝 로직 적용
-         후보 비율 % 전 모드 표시
+  v8.2 - fallback 15종목 → 50종목으로 확장
+         get_kospi_tickers() 반환형 변경에 맞게 언패킹 수정 (tickers, count, date)
+         ohlcv_by_ticker 결과 ticker 수 로그 표시 추가
+         전체 스캔 threshold: 60 → 70 (연속 점수 체계 기준)
 """
 
 import streamlit as st
@@ -17,6 +16,7 @@ from box_range_scanner import run_scan, get_kospi_tickers
 
 # -- 상수 --------------------------------------------------
 FALLBACK_TICKERS = [
+    # 시가총액 상위 + 업종 분산 50종목
     "005930", "000660", "207940", "005380", "035420",
     "000270", "068270", "105560", "055550", "086790",
     "096770", "003490", "051910", "017670", "015760",
@@ -28,10 +28,8 @@ FALLBACK_TICKERS = [
     "024110", "000810", "005830", "004000", "001450",
     "023530", "016360", "011790", "003010", "002030",
 ]
-FAST_SCORE_THRESHOLD    = 0
-DEFAULT_FULL_THRESHOLD  = 70
-RATIO_HIGH              = 20.0   # 이 % 초과 시 threshold +5 권고
-RATIO_LOW               = 10.0   # 이 % 미만 시 threshold -5 권고
+FAST_SCORE_THRESHOLD = 0   # 빠른 스캔: 전부 표시
+FULL_SCORE_THRESHOLD = 70  # 전체 스캔: 70점 이상 (연속 점수 체계 기준)
 # ----------------------------------------------------------
 
 
@@ -44,51 +42,25 @@ def get_price_chart(ticker_code):
     return df[["종가"]]
 
 
-def calc_suggested_threshold(current_threshold, ratio):
-    """
-    후보 비율 기준 threshold 튜닝 권고값 계산
-    20% 초과 → +5 / 10% 미만 → -5 / 그 사이 → 현재값 유지
-    """
-    if ratio > RATIO_HIGH:
-        return current_threshold + 5, f"후보 비율 {ratio}% > {RATIO_HIGH}% — threshold {current_threshold} → {current_threshold + 5} 권고"
-    elif ratio < RATIO_LOW:
-        return current_threshold - 5, f"후보 비율 {ratio}% < {RATIO_LOW}% — threshold {current_threshold} → {current_threshold - 5} 권고"
-    else:
-        return current_threshold, None   # 조정 불필요
-
-
 # -- 화면 구성 ---------------------------------------------
 st.title("박스권 스캐너 컨트롤룸")
 
-# -- 사이드바 ----------------------------------------------
 st.sidebar.header("스캔 설정")
-
 scan_mode = st.sidebar.radio(
     "스캔 모드",
     ["⚡ 빠른 스캔 (후보군)", "🔍 전체 스캔 (코스피 전종목)"],
     index=0,
 )
+
 is_full_scan = scan_mode.startswith("🔍")
 
 if is_full_scan:
     st.sidebar.info("코스피 전종목을 스캔합니다.\n약 900~1,000개 종목 대상.\n소요 시간: 수 분 예상.")
-
-    # threshold 슬라이더 (전체 스캔 전용)
-    # 이전 스캔에서 권고값이 있으면 기본값으로 반영
-    default_thresh = st.session_state.get("suggested_threshold", DEFAULT_FULL_THRESHOLD)
-    full_threshold = st.sidebar.slider(
-        "박스권 점수 threshold",
-        min_value=40, max_value=95, value=default_thresh, step=5,
-        help="이 점수 이상인 종목만 결과에 표시됩니다. 후보 비율에 따라 자동 권고값이 제시됩니다."
-    )
-    st.sidebar.caption(f"현재: {full_threshold}점 이상 | 목표 비율: {RATIO_LOW}~{RATIO_HIGH}%")
-    st.caption(f"🔍 전체 스캔 모드 — threshold: {full_threshold}점 이상")
+    st.caption("🔍 전체 스캔 모드 — 코스피 전종목에서 박스권 종목을 탐색합니다.")
 else:
     top_n = st.sidebar.slider("후보군 종목 수", min_value=15, max_value=100, value=50, step=5)
     st.caption("⚡ 빠른 스캔 모드 — 거래량 상위 후보군을 분석합니다.")
-    full_threshold = DEFAULT_FULL_THRESHOLD  # 빠른 스캔은 사용 안 함
 
-# -- 스캔 버튼 ---------------------------------------------
 btn_label = "🔍 코스피 전체 스캔 시작" if is_full_scan else "⚡ 빠른 스캔 시작"
 
 if st.button(btn_label, use_container_width=True):
@@ -102,19 +74,18 @@ if st.button(btn_label, use_container_width=True):
 
         if not tickers:
             st.warning("코스피 전체 조회 실패 — 제한 모드로 전환됩니다.")
-            tickers      = FALLBACK_TICKERS
-            is_fallback  = True
-            ticker_count = len(FALLBACK_TICKERS)
-            ref_date     = None
+            tickers     = FALLBACK_TICKERS
+            is_fallback = True
         else:
+            # 로그: ohlcv_by_ticker 결과 확인
             st.success(f"✅ ohlcv_by_ticker 정상 — {ref_date} 기준 {ticker_count}개 종목 확인")
 
         total = len(tickers)
 
         if is_fallback:
-            st.info(f"제한 모드: {total}개 기본 종목으로 스캔합니다. (threshold: {full_threshold}점)")
+            st.info(f"제한 모드: {total}개 기본 종목으로 스캔합니다.")
         else:
-            st.info(f"코스피 {total}개 종목 스캔 시작 (threshold: {full_threshold}점 이상)")
+            st.info(f"코스피 {total}개 종목 스캔 시작 (threshold: {FULL_SCORE_THRESHOLD}점 이상)")
 
         progress_bar = st.progress(0)
         status_text  = st.empty()
@@ -127,28 +98,24 @@ if st.button(btn_label, use_container_width=True):
             df, processed_count, fail_count = run_scan(
                 tickers=tickers,
                 progress_callback=update_progress,
-                score_threshold=full_threshold,
+                score_threshold=FULL_SCORE_THRESHOLD,
             )
             progress_bar.progress(1.0)
             status_text.text("스캔 완료")
 
-            # 후보 비율 계산 + 튜닝 권고
+            # 후보 비율 로그
             ratio = round(len(df) / processed_count * 100, 1) if processed_count > 0 else 0
-            suggested, tune_msg = calc_suggested_threshold(full_threshold, ratio)
+            st.caption(f"📊 후보 비율: {processed_count}개 처리 중 {len(df)}개 통과 ({ratio}%)")
 
             st.session_state.update({
-                "result":               df,
-                "scan_total":           total,
-                "scan_processed":       processed_count,
-                "scan_fail":            fail_count,
-                "scan_mode":            "full",
-                "scan_fallback":        is_fallback,
-                "scan_ticker_cnt":      ticker_count,
-                "scan_ref_date":        ref_date,
-                "scan_ratio":           ratio,
-                "scan_threshold_used":  full_threshold,
-                "suggested_threshold":  suggested,
-                "tune_msg":             tune_msg,
+                "result":          df,
+                "scan_total":      total,
+                "scan_processed":  processed_count,
+                "scan_fail":       fail_count,
+                "scan_mode":       "full",
+                "scan_fallback":   is_fallback,
+                "scan_ticker_cnt": ticker_count,
+                "scan_ref_date":   ref_date,
             })
         except Exception as e:
             st.error(f"스캔 중 오류: {e}")
@@ -172,67 +139,51 @@ if st.button(btn_label, use_container_width=True):
                     tickers=tickers,
                     score_threshold=FAST_SCORE_THRESHOLD,
                 )
-                ratio = round(len(df) / processed_count * 100, 1) if processed_count > 0 else 0
-
                 st.session_state.update({
-                    "result":              df,
-                    "scan_total":          len(tickers),
-                    "scan_processed":      processed_count,
-                    "scan_fail":           fail_count,
-                    "scan_mode":           "fast",
-                    "scan_fallback":       False,
-                    "scan_ratio":          ratio,
-                    "scan_threshold_used": FAST_SCORE_THRESHOLD,
-                    "tune_msg":            None,
+                    "result":         df,
+                    "scan_total":     len(tickers),
+                    "scan_processed": processed_count,
+                    "scan_fail":      fail_count,
+                    "scan_mode":      "fast",
+                    "scan_fallback":  False,
                 })
             except Exception as e:
                 st.error(f"오류 발생: {e}")
 
 # -- 결과 표시 ----------------------------------------------
 if "result" in st.session_state:
-    df         = st.session_state["result"]
-    mode       = st.session_state.get("scan_mode", "fast")
-    scanned    = st.session_state.get("scan_total", 0)
-    processed  = st.session_state.get("scan_processed", 0)
-    fail       = st.session_state.get("scan_fail", 0)
-    is_fb      = st.session_state.get("scan_fallback", False)
-    ratio      = st.session_state.get("scan_ratio", 0)
-    used_thresh = st.session_state.get("scan_threshold_used", 0)
-    tune_msg   = st.session_state.get("tune_msg", None)
-    found      = len(df)
+    df        = st.session_state["result"]
+    mode      = st.session_state.get("scan_mode", "fast")
+    scanned   = st.session_state.get("scan_total", 0)
+    processed = st.session_state.get("scan_processed", 0)
+    fail      = st.session_state.get("scan_fail", 0)
+    is_fb     = st.session_state.get("scan_fallback", False)
+    found     = len(df)
 
     st.divider()
 
-    # 4개 지표
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("총 대상",    f"{scanned}개")
     col2.metric("정상 처리",  f"{processed}개")
     col3.metric("실패/스킵",  f"{fail}개")
-    col4.metric("박스권 후보", f"{found}개  ({ratio}%)")
-
-    # threshold 튜닝 권고 배너
-    if tune_msg:
-        suggested = st.session_state.get("suggested_threshold", used_thresh)
-        if ratio > RATIO_HIGH:
-            st.warning(f"⚠️ {tune_msg}\n\n사이드바 슬라이더를 **{suggested}**으로 조정 후 재스캔하세요.")
-        else:
-            st.info(f"ℹ️ {tune_msg}\n\n사이드바 슬라이더를 **{suggested}**으로 조정 후 재스캔하세요.")
+    col4.metric("박스권 후보", f"{found}개")
 
     if df.empty:
-        if mode in ("full", ) or is_fb:
-            st.warning(f"조건에 맞는 종목 없음 — {used_thresh}점 이상 박스권 종목이 없습니다.")
+        if mode == "full":
+            st.warning(f"조건에 맞는 종목 없음 — {FULL_SCORE_THRESHOLD}점 이상 박스권 종목이 없습니다.")
         else:
             st.warning("결과 없음 — 평일 오후 4시 이후 다시 실행해보세요.")
     else:
+        ratio = round(found / processed * 100, 1) if processed > 0 else 0
         if mode == "full" and not is_fb:
-            st.success(f"코스피 {scanned}개 중 **{found}개** 박스권 후보 ({ratio}%) | threshold {used_thresh}점")
+            st.success(f"코스피 {scanned}개 중 **{found}개** 박스권 후보 발견 ({ratio}%)")
         elif is_fb:
-            st.info(f"제한 모드 — {scanned}개 중 **{found}개** 후보 ({ratio}%) | threshold {used_thresh}점")
+            st.info(f"제한 모드 — {scanned}개 종목 중 **{found}개** 후보 ({ratio}%)")
         else:
             st.success(f"후보군 {scanned}개 분석 완료 — **{found}개** 결과 ({ratio}%)")
 
         st.subheader("박스권 후보")
-        st.caption(f"threshold {used_thresh}점 이상 | 높을수록 박스권 가능성 높음 (100점 최고)")
+        st.caption(f"점수 {FULL_SCORE_THRESHOLD if mode == 'full' else 0}점 이상 | 높을수록 박스권 가능성 높음 (100점 최고)")
         st.dataframe(df, use_container_width=True, hide_index=True)
         st.divider()
 
