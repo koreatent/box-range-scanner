@@ -311,10 +311,14 @@ def _get_ticker_name(ticker):
 # 4. 메인 스캔
 # ══════════════════════════════════════════════════════════════
 
-def run_scan(tickers=None, progress_callback=None, score_threshold=0, price_source_info=None):
+def run_scan(tickers=None, progress_callback=None, score_threshold=0, price_source_info=None,
+             partial_callback=None, save_every=10):
     """
     박스권 스캔 실행
     반환: (DataFrame, processed_count, fail_count)
+
+    partial_callback(partial_rows, processed_count, fail_count, current_index, total)
+        → save_every 종목 처리마다 호출 (중간 저장용)
     """
     if tickers is None:
         tickers = FALLBACK_KOSPI
@@ -356,6 +360,16 @@ def run_scan(tickers=None, progress_callback=None, score_threshold=0, price_sour
         except Exception:
             fail_count += 1
             continue
+
+        # ── 중간 저장 (save_every 단위) ──────────────────────
+        if partial_callback and (i + 1) % save_every == 0:
+            partial_callback(
+                partial_rows=results.copy(),
+                processed_count=processed_count,
+                fail_count=fail_count,
+                current_index=i + 1,
+                total=total,
+            )
 
     if not results:
         return pd.DataFrame(columns=["종목코드","종목명","점수","거래량","이유","돌파신호"]), processed_count, fail_count

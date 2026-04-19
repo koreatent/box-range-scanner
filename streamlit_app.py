@@ -1,8 +1,10 @@
 """
-streamlit_app.py — v9.0
+streamlit_app.py — v9.1
 박스권 스캐너 컨트롤룸
 
 변경 이력:
+  v9.1 - TOP 5 카드 UX 리터칭 (2열 그리드, 점수 강도 이모지)
+         전수 스캔 중간 저장 + rerun 복구 구조 추가
   v9.0 - 입력 레이어 리팩토링 (멈추지 않는 스캐너)
          시장 선택 UI (KOSPI / KOSDAQ / ALL)
          멀티소스 fallback 구조 (FDR → NAVER → yfinance → 캐시)
@@ -13,6 +15,7 @@ streamlit_app.py — v9.0
 """
 
 import streamlit as st
+import pandas as pd
 from datetime import datetime, timedelta
 
 from box_range_scanner import (
@@ -97,6 +100,22 @@ def _render_badge_row(market, ticker_src, price_src, mode_label, cache_date, sta
 
 # ── 화면 구성 ──────────────────────────────────────────────────
 st.title("박스권 스캐너 컨트롤룸")
+
+# ── rerun 복구 화면 ────────────────────────────────────────────
+if (
+    (st.session_state.get("scan_running") or st.session_state.get("scan_interrupted"))
+    and st.session_state.get("partial_results") is not None
+):
+    _prog  = st.session_state.get("scan_progress", 0)
+    _total = st.session_state.get("scan_total", 0)
+    st.warning(
+        f"⚠️ 이전 스캔이 중단되었거나 앱이 재실행되었습니다. "
+        f"현재 진행: {_prog} / {_total} 종목. "
+        f"아래는 저장된 중간 결과입니다. 이어서 확인하거나 다시 스캔할 수 있습니다."
+    )
+    _partial = st.session_state["partial_results"]
+    if _partial:
+        st.info(f"부분 결과 {len(_partial)}건 복원됨 — 현재까지 {_prog} / {_total} 종목 기준입니다.")
 
 # ── 사이드바 ───────────────────────────────────────────────────
 st.sidebar.header("스캔 설정")
@@ -184,6 +203,25 @@ if st.button(btn_label, use_container_width=True):
         total = len(tickers)
         st.info(f"{market_choice} {total}개 종목 스캔 시작 (threshold: {full_threshold}점 이상)")
 
+        # ── 스캔 시작 즉시 상태 저장 ─────────────────────────
+        st.session_state.update({
+            "scan_running":        True,
+            "scan_market":         market_choice,
+            "scan_mode":           "full",
+            "scan_total":          total,
+            "scan_processed":      0,
+            "scan_fail":           0,
+            "scan_ratio":          0,
+            "scan_threshold_used": full_threshold,
+            "scan_ticker_src":     ticker_src,
+            "scan_price_src":      price_src,
+            "scan_cache_date":     cache_date,
+            "scan_fallback":       is_fallback,
+            "partial_results":     [],
+            "scan_progress":       0,
+            "scan_interrupted":    False,
+        })
+
         progress_bar = st.progress(0)
         status_text  = st.empty()
 
@@ -191,12 +229,21 @@ if st.button(btn_label, use_container_width=True):
             progress_bar.progress(current / total)
             status_text.text(f"({current} / {total}) {name}")
 
+        def save_partial_state(partial_rows, processed_count, fail_count, current_index, total):
+            st.session_state["partial_results"] = partial_rows
+            st.session_state["scan_processed"]  = processed_count
+            st.session_state["scan_fail"]        = fail_count
+            st.session_state["scan_progress"]    = current_index
+            st.session_state["scan_total"]       = total
+
         try:
             df, processed_count, fail_count = run_scan(
                 tickers=tickers,
                 progress_callback=update_progress,
                 score_threshold=full_threshold,
                 price_source_info=price_info,
+                partial_callback=save_partial_state,
+                save_every=10,
             )
             progress_bar.progress(1.0)
             status_text.text("스캔 완료")
@@ -219,8 +266,13 @@ if st.button(btn_label, use_container_width=True):
                 "scan_threshold_used": full_threshold,
                 "suggested_threshold": suggested,
                 "tune_msg":            tune_msg,
+                "scan_running":        False,
+                "scan_interrupted":    False,
+                "partial_results":     df.to_dict("records"),
             })
         except Exception as e:
+            st.session_state["scan_running"]     = False
+            st.session_state["scan_interrupted"] = True
             st.error(f"스캔 중 오류: {e}")
 
     else:
@@ -286,20 +338,46 @@ if st.button(btn_label, use_container_width=True):
                     "scan_threshold_used": FAST_SCORE_THRESHOLD,
                     "tune_msg":            None,
                     "suggested_threshold": DEFAULT_FULL_THRESHOLD,
+                    "partial_results":     [],
+                    "scan_progress":       0,
+                    "scan_running":        False,
+                    "scan_interrupted":    False,
                 })
             except Exception as e:
+                st.session_state["scan_running"]     = False
+                st.session_state["scan_interrupted"] = False
+                st.session_state["partial_results"]  = []
+                st.session_state["scan_progress"]    = 0
                 st.error(f"오류 발생: {e}")
 
 
 # ── 결과 표시 ──────────────────────────────────────────────────
-if "result" in st.session_state:
-    df          = st.session_state["result"]
+# result 없어도 partial_results 있으면 부분 결과 표시
+_is_partial = False
+if (
+    (st.session_state.get("scan_running") or st.session_state.get("scan_interrupted"))
+    and st.session_state.get("partial_results")
+):
+    display_df = pd.DataFrame(st.session_state["partial_results"])
+    _is_partial = True
+elif "result" in st.session_state:
+    display_df = st.session_state["result"]
+elif st.session_state.get("partial_results"):
+    display_df = pd.DataFrame(st.session_state["partial_results"])
+    _is_partial = True
+else:
+    display_df = None
+
+if display_df is not None:
+    df          = display_df
     mode        = st.session_state.get("scan_mode", "fast")
     scanned     = st.session_state.get("scan_total", 0)
     processed   = st.session_state.get("scan_processed", 0)
     fail        = st.session_state.get("scan_fail", 0)
     is_fb       = st.session_state.get("scan_fallback", False)
-    ratio       = st.session_state.get("scan_ratio", 0)
+    ratio       = round(len(df) / processed * 100, 1) if _is_partial and processed > 0 else (
+        0 if _is_partial else st.session_state.get("scan_ratio", 0)
+    )
     used_thresh = st.session_state.get("scan_threshold_used", 0)
     tune_msg    = st.session_state.get("tune_msg", None)
     found       = len(df)
@@ -325,22 +403,29 @@ if "result" in st.session_state:
     col4.metric("박스권 후보", f"{found}개  ({ratio}%)")
 
     # threshold 튜닝 권고
-    if tune_msg:
+    if tune_msg and not _is_partial:
         suggested = st.session_state.get("suggested_threshold", used_thresh)
         if ratio > RATIO_HIGH:
             st.warning(f"⚠️ {tune_msg}\n\n사이드바 슬라이더를 **{suggested}**으로 조정 후 재스캔하세요.")
         else:
             st.info(f"ℹ️ {tune_msg}\n\n사이드바 슬라이더를 **{suggested}**으로 조정 후 재스캔하세요.")
 
+    if st.session_state.get("scan_interrupted") is True:
+        st.error("스캔 중 오류 발생 — 아래는 저장된 부분 결과입니다.")
+
+    if _is_partial:
+        st.warning("⚠️ 전체 스캔이 완료되기 전 중단되었습니다. 아래는 부분 결과입니다.")
+
     if df.empty:
         st.warning(f"조건에 맞는 종목 없음 — threshold {used_thresh}점 이상 박스권 종목이 없습니다.")
     else:
-        if mode == "full" and not is_fb:
-            st.success(f"{market} {scanned}개 중 **{found}개** 박스권 후보 ({ratio}%) | threshold {used_thresh}점")
-        elif is_fb:
-            st.error(f"🚨 제한 모드 — {scanned}개 중 **{found}개** 후보 ({ratio}%) | threshold {used_thresh}점")
-        else:
-            st.success(f"후보군 {scanned}개 분석 완료 — **{found}개** 결과 ({ratio}%)")
+        if not _is_partial:
+            if mode == "full" and not is_fb:
+                st.success(f"{market} {scanned}개 중 **{found}개** 박스권 후보 ({ratio}%) | threshold {used_thresh}점")
+            elif is_fb:
+                st.error(f"🚨 제한 모드 — {scanned}개 중 **{found}개** 후보 ({ratio}%) | threshold {used_thresh}점")
+            else:
+                st.success(f"후보군 {scanned}개 분석 완료 — **{found}개** 결과 ({ratio}%)")
 
         # 🔽 정렬: 1순위 점수(내림차순), 2순위 거래량(내림차순)
         df = df.sort_values(by=["점수", "거래량"], ascending=[False, False]).reset_index(drop=True)
@@ -350,6 +435,8 @@ if "result" in st.session_state:
         top_df = df.head(top_n_cards)
 
         st.subheader("🏆 지금 봐야 할 종목 TOP 5")
+        if _is_partial:
+            st.caption("⚠️ 부분 결과 기준 TOP 5")
         st.caption("점수 + 거래량 기준 — 즉시 판단용")
 
         # 🔹 모바일 대응: 2열 그리드
