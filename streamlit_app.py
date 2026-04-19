@@ -344,6 +344,8 @@ if "result" in st.session_state:
 
         st.subheader("박스권 후보")
         st.caption(f"threshold {used_thresh}점 이상 | 높을수록 박스권 가능성 높음 (100점 최고) | 시장: {market}")
+        # 🔽 정렬: 1순위 점수(내림차순), 2순위 거래량(내림차순)
+        df = df.sort_values(by=["점수", "거래량"], ascending=[False, False]).reset_index(drop=True)
         st.dataframe(df, use_container_width=True, hide_index=True)
         st.divider()
 
