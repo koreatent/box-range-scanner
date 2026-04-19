@@ -1,3 +1,6 @@
 pykrx
 pandas
 streamlit
+matplotlib
+FinanceDataReader
+yfinance
