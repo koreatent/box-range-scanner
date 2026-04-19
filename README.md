@@ -1,4 +1,5 @@
-[README.md](https://github.com/user-attachments/files/26864581/README.md)
+[README.md](https://github.com/user-attachments/files/26864590/README.md)
+
 # 박스권 스캐너 컨트롤룸
 
 코스피 전종목을 스캔해서 박스권 종목만 자동으로 추려주는 도구입니다.
