@@ -1,10 +1,14 @@
-[README.md](https://github.com/user-attachments/files/26868295/README.md)
-
+[README.md](https://github.com/user-attachments/files/26868334/README.md)
 # 박스권 스캐너 컨트롤룸
 
 한국 주식시장(KOSPI / KOSDAQ)에서 박스권 종목을 자동 탐지하는 스캐너.
 
 🔗 **배포 주소**: https://appapppy-arrvupjezplekjddatmdmg.streamlit.app
+
+> ⚠️ **투자 면책 고지**
+> 이 도구는 **참고용 정보 제공 목적**으로만 제작되었습니다.
+> 본 스캐너의 결과는 투자 권유 또는 매매 추천이 아니며, 실제 투자 결정에 따른 손익은 전적으로 본인 책임입니다.
+> 주식 투자에는 원금 손실 위험이 있습니다.
 
 ---
 
@@ -161,8 +165,6 @@ ALL 2770개 중 309개 박스권 후보 (15.6%) | 60 ~ 80점 범위
 | 주말 / 공휴일 | 데이터 수집 실패 시 fallback으로 자동 전환 (정상 동작) |
 | 코드 복붙 주의 | 코드 복사 시 따옴표가 곱따옴표로 깨질 수 있음 → GitHub에서 직접 파일 다운로드해서 사용할 것 |
 | ALL 스캔 소요 시간 | KOSPI + KOSDAQ 전종목 병합 시 스캔 시간 두 배 증가 (청크 분할로 안정화됨) |
-| partial_results 타입 | 항상 list of dict — DataFrame 직접 저장 금지 |
-| chunk_executing 플래그 | 예외 발생 시 반드시 False 복구 필수. 이 플래그 없이 auto resume 구현 금지 |
 | session_state 영속성 | Streamlit Cloud에서 탭을 닫으면 session_state 초기화됨 — 완전한 영속성 아님 |
 
 ---
