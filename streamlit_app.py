@@ -342,10 +342,52 @@ if "result" in st.session_state:
         else:
             st.success(f"후보군 {scanned}개 분석 완료 — **{found}개** 결과 ({ratio}%)")
 
-        st.subheader("박스권 후보")
-        st.caption(f"threshold {used_thresh}점 이상 | 높을수록 박스권 가능성 높음 (100점 최고) | 시장: {market}")
         # 🔽 정렬: 1순위 점수(내림차순), 2순위 거래량(내림차순)
         df = df.sort_values(by=["점수", "거래량"], ascending=[False, False]).reset_index(drop=True)
+
+        # ── TOP 5 요약 카드 ──────────────────────────────────
+        top_n_cards = min(len(df), 5)
+        top_df = df.head(top_n_cards)
+
+        st.subheader("🏆 지금 봐야 할 종목 TOP 5")
+        st.caption("점수 + 거래량 기준 — 즉시 판단용")
+
+        # 🔹 모바일 대응: 2열 그리드
+        cols_per_row = 2 if top_n_cards >= 4 else top_n_cards
+        rows = [top_df[i:i+cols_per_row] for i in range(0, len(top_df), cols_per_row)]
+
+        for row_df in rows:
+            cols = st.columns(len(row_df))
+            for col, (_, row) in zip(cols, row_df.iterrows()):
+                with col:
+                    with st.container(border=True):
+
+                        # 종목명 + 코드
+                        st.markdown(f"**{row['종목명']}**")
+                        st.caption(f"`{row['종목코드']}`")
+
+                        # 점수 + 강도 이모지
+                        score = row['점수']
+                        if score >= 90:
+                            emoji = "🔥"
+                        elif score >= 80:
+                            emoji = "⚡"
+                        else:
+                            emoji = "🟡"
+
+                        st.metric(label="점수", value=f"{score}점 {emoji}")
+
+                        # 돌파 신호
+                        st.write(f"{row['돌파신호']}")
+
+                        # 이유 (강조)
+                        st.write(f"🧠 {row['이유']}")
+
+        st.divider()
+
+        # ── 박스권 후보 테이블 ────────────────────────────────
+        st.subheader("박스권 후보")
+        st.caption(f"threshold {used_thresh}점 이상 | 높을수록 박스권 가능성 높음 (100점 최고) | 시장: {market}")
         st.dataframe(df, use_container_width=True, hide_index=True)
         st.divider()
 
