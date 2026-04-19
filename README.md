@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/26868334/README.md)
+[README.md](https://github.com/user-attachments/files/26869946/README.md)
 # 박스권 스캐너 컨트롤룸
 
 한국 주식시장(KOSPI / KOSDAQ)에서 박스권 종목을 자동 탐지하는 스캐너.
@@ -16,7 +16,7 @@
 
 ```
 box-range-scanner/
-├─ streamlit_app.py       ← UI 메인 (v11.2)
+├─ streamlit_app.py       ← UI 메인 (v11.3)
 ├─ box_range_scanner.py   ← 스캔 로직 모듈 (v10.0)
 ├─ requirements.txt       ← 설치 목록
 └─ README.md              ← 이 파일
@@ -135,6 +135,13 @@ box-range-scanner/
 ALL 2770개 중 309개 박스권 후보 (15.6%) | 60 ~ 80점 범위
 ```
 
+### 📈 종목 차트
+결과 테이블 하단에서 종목을 선택하면 최근 90일 **일봉 캔들스틱 차트**를 확인할 수 있습니다.
+
+- 상승일 = 빨강 / 하락일 = 파랑
+- 고가/저가 꼬리 포함
+- 하단 거래량 보조 차트 함께 표시
+
 ---
 
 ## 🔖 점수 기준 (연속 점수 체계)
@@ -194,6 +201,7 @@ streamlit run streamlit_app.py
 
 | 버전 | 주요 변경 |
 |------|-----------|
+| v11.3 | 종목 차트 교체 — 일봉 캔들스틱 (상승=빨강/하락=파랑, 꼬리 포함) + 하단 거래량 보조 차트 |
 | v11.2 | 전체 스캔 점수 필터 단일 threshold → 범위 슬라이더 (min ~ max) 변경. UI 점수 범위 표기 가독성 개선 |
 | v11.1 | Chunk + Auto Resume — 100개 단위 청크 분할, chunk_executing 무한루프 방어, 장시간 실행 안정화 |
 | v10.2 | trigger 기반 버튼 안정화 (resume / clear), partial_results 타입 일관화 |
