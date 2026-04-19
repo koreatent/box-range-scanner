@@ -1,6 +1,7 @@
 pykrx
 pandas
 streamlit
+plotly
 matplotlib
 finance-datareader
 yfinance

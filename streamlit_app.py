@@ -1,8 +1,12 @@
 """
-streamlit_app.py — v11.2
+streamlit_app.py — v11.3
 박스권 스캐너 컨트롤룸
 
 변경 이력:
+  v11.3 - 종목 차트 교체 — st.line_chart() → Plotly 막대 차트
+          상승일=빨강 / 하락일=파랑 색상 구분
+          hover에 날짜/시가/종가/고가/저가 표시
+          get_price_chart() 거래량 컬럼 제거 (시가/고가/저가/종가만 반환)
   v11.2 - 전체 스캔 점수 필터 단일 threshold → 범위 슬라이더 (min~max) 변경
           run_scan()에는 score_min만 전달 (엔진 안정성 유지)
           화면 표시 직전 score_max 필터링 적용
@@ -27,8 +31,9 @@ streamlit_app.py — v11.2
   v8.3 - threshold 슬라이더, 튜닝 권고 배너
 """
 
-import pandas as pd
 import streamlit as st
+import pandas as pd
+import plotly.graph_objects as go
 
 from box_range_scanner import (
     FALLBACK_KOSDAQ,
@@ -87,8 +92,9 @@ def get_price_chart(ticker_code):
     if _KRX_AVAILABLE:
         try:
             df = krx_stock.get_market_ohlcv_by_date(start, end, ticker_code)
-            if df is not None and not df.empty:
-                return df[["종가"]]
+            if df is not None and not df.empty and {"시가", "종가"}.issubset(df.columns):
+                cols = [col for col in ["시가", "고가", "저가", "종가"] if col in df.columns]
+                return df[cols]
         except Exception:
             pass
     return None
@@ -120,6 +126,63 @@ def _render_badge_row(market, ticker_src, price_src, mode_label, cache_date, sta
         st.warning(f"⚠️ 캐시 데이터 사용 중 — [{cache_date}] 기준 최근 성공 데이터로 스캔되었습니다")
     else:
         st.error("🚨 제한 모드 — 현재 데이터가 제한적입니다. fallback 종목 기준으로 스캔 중")
+
+
+def _render_price_flow_chart(chart_df):
+    flow_df = chart_df.copy()
+    flow_df["상승"] = flow_df["종가"] >= flow_df["시가"]
+    colors = ["#ef4444" if is_up else "#3b82f6" for is_up in flow_df["상승"]]
+
+    hover_cols = ["시가", "종가"]
+    if "고가" in flow_df.columns:
+        hover_cols.append("고가")
+    if "저가" in flow_df.columns:
+        hover_cols.append("저가")
+
+    customdata = flow_df[hover_cols].values
+    hover_lines = [
+        "날짜=%{x|%Y-%m-%d}",
+        "시가=%{customdata[0]:,.0f}",
+        "종가=%{customdata[1]:,.0f}",
+    ]
+    if "고가" in hover_cols:
+        hover_lines.append("고가=%{customdata[2]:,.0f}")
+    if "저가" in hover_cols:
+        low_index = 3 if "고가" in hover_cols else 2
+        hover_lines.append(f"저가=%{{customdata[{low_index}]:,.0f}}")
+
+    fig = go.Figure()
+    fig.add_bar(
+        x=flow_df.index,
+        y=flow_df["종가"],
+        marker_color=colors,
+        customdata=customdata,
+        name="가격 흐름",
+        hovertemplate="<br>".join(hover_lines) + "<extra></extra>",
+    )
+
+    fig.update_layout(
+        height=320,
+        margin=dict(l=8, r=8, t=8, b=8),
+        showlegend=False,
+        bargap=0.15,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
+    fig.update_xaxes(
+        title=None,
+        showgrid=False,
+        tickformat="%m/%d",
+        tickangle=0,
+    )
+    fig.update_yaxes(
+        title="종가",
+        showgrid=True,
+        gridcolor="rgba(148, 163, 184, 0.18)",
+        zeroline=False,
+    )
+
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
 def _merge_result_rows(existing_rows, new_df):
@@ -862,4 +925,5 @@ if display_df is not None:
             if chart_df is None or chart_df.empty:
                 st.warning("차트 데이터를 불러올 수 없습니다.")
             else:
-                st.line_chart(chart_df)
+                st.caption("빨강=상승일, 파랑=하락일")
+                _render_price_flow_chart(chart_df)
