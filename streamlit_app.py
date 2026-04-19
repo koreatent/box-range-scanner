@@ -560,8 +560,8 @@ if is_full_scan:
         help="이 범위에 해당하는 박스권 점수 종목만 표시합니다.",
     )
     st.session_state["ui_score_range"] = (score_min, score_max)
-    st.sidebar.caption(f"현재: {_score_range_label(score_min, score_max)} | 목표 비율: {RATIO_LOW}~{RATIO_HIGH}%")
-    st.caption(f"🔍 전체 스캔 모드 ({market_choice}) — 점수 범위: {_score_range_label(score_min, score_max)}")
+    st.sidebar.caption(f"현재 범위: {score_min} ~ {score_max}점 | 목표 비율: {RATIO_LOW} ~ {RATIO_HIGH}%")
+    st.caption(f"🔍 전체 스캔 모드 ({market_choice}) — 점수 범위: {score_min} ~ {score_max}점")
 else:
     top_n = st.sidebar.slider("후보군 종목 수", min_value=15, max_value=100, value=50, step=5)
     st.caption(f"⚡ 빠른 스캔 모드 ({market_choice}) — 거래량 상위 후보군 분석")
