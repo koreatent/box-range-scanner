@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/26864630/README.md)
+[README.md](https://github.com/user-attachments/files/26868272/README.md)
 # 박스권 스캐너 컨트롤룸
 
 한국 주식시장(KOSPI / KOSDAQ)에서 박스권 종목을 자동 탐지하는 스캐너.
@@ -11,8 +11,8 @@
 
 ```
 box-range-scanner/
-├─ streamlit_app.py       ← UI 메인 (v9.0)
-├─ box_range_scanner.py   ← 스캔 로직 모듈 (v9.0)
+├─ streamlit_app.py       ← UI 메인 (v11.2)
+├─ box_range_scanner.py   ← 스캔 로직 모듈 (v10.0)
 ├─ requirements.txt       ← 설치 목록
 └─ README.md              ← 이 파일
 ```
@@ -40,7 +40,9 @@ box-range-scanner/
 
 ### 🔍 전체 스캔 (전종목)
 - 선택한 시장 전종목 대상
-- threshold 슬라이더로 점수 기준 조정 가능
+- **점수 범위 슬라이더**로 min ~ max 구간 설정 가능 (v11.2)
+- 100개 단위 청크로 분할 실행 — 장시간 안정성 확보 (v11.1)
+- 중단 후 이어달리기 지원 (v10.0)
 - 진행바로 실시간 진행 확인
 - 소요 시간: 수 분
 
@@ -91,6 +93,27 @@ box-range-scanner/
 
 ---
 
+## 🏆 TOP 5 카드
+
+전체 스캔 / 빠른 스캔 결과 상단에 점수 + 거래량 기준 상위 5개 종목을 카드로 표시합니다.
+
+- 2열 그리드 레이아웃
+- 점수 강도 이모지 표시 (🔥 90점 이상 / ⚡ 80점 이상 / 🟡 그 외)
+- 돌파신호 + 이유 즉시 확인 가능
+
+---
+
+## 🔄 이어달리기 (Resume Scan)
+
+전체 스캔 중 앱이 중단되거나 재실행되어도 이어서 스캔을 재개할 수 있습니다.
+
+- 처리된 ticker 목록 자동 저장
+- 재실행 시 복구 배너 자동 표시
+- **▶️ 이어서 스캔 재개** 버튼으로 중단 지점부터 재개
+- **🧹 중간 결과 비우기** 버튼으로 초기화 후 새 스캔 가능
+
+---
+
 ## 📊 결과 화면
 
 | 컬럼 | 설명 |
@@ -104,7 +127,7 @@ box-range-scanner/
 
 결과 요약 예시:
 ```
-KOSPI 950개 중 42개 박스권 후보 (4.4%) | threshold 70점
+ALL 2770개 중 309개 박스권 후보 (15.6%) | 60 ~ 80점 범위
 ```
 
 ---
@@ -127,18 +150,6 @@ KOSPI 950개 중 42개 박스권 후보 (4.4%) | threshold 70점
 
 ---
 
-## ⚠️ 주의사항
-
-| 항목 | 내용 |
-|------|------|
-| KRX 마스터 API | Streamlit Cloud에서 `get_market_ticker_list()` 사용 불가 → FDR StockListing 기반으로 전환됨 |
-| 제한 모드 편향 | fallback 종목은 시장별 대형주 편향 → threshold 튜닝 수치는 전체 스캔 기준으로 확정할 것. 제한 모드 수치는 참고용만 |
-| 주말/공휴일 | 데이터 수집 실패 시 fallback으로 자동 전환 (정상 동작) |
-| 코드 복붙 주의 | 코드 복사 시 따옴표가 곱따옴표로 깨질 수 있음 → GitHub에서 직접 파일 다운로드해서 사용할 것 |
-| ALL 스캔 소요 시간 | KOSPI + KOSDAQ 전종목 병합 시 스캔 시간이 두 배로 증가 |
-
----
-
 ## ⚙️ 로컬 실행 방법
 
 ```bash
@@ -155,7 +166,8 @@ streamlit run streamlit_app.py
 | 경고 배지 표시 | 캐시 데이터 사용 중 | 평일 장 마감 후 재실행 |
 | 위기(빨강) 배지 표시 | 모든 소스 실패 → fallback 모드 | 잠시 후 재시도 |
 | `ModuleNotFoundError` | 패키지 미설치 | `pip install -r requirements.txt` 재실행 |
-| 결과 없음 | threshold가 너무 높음 | 사이드바 슬라이더로 threshold 낮추기 |
+| 결과 없음 | 점수 범위가 너무 좁음 | 사이드바 범위 슬라이더 조정 |
+| 스캔 중단 | 앱 타임아웃 또는 재실행 | 이어달리기 버튼으로 재개 |
 
 ---
 
@@ -163,7 +175,13 @@ streamlit run streamlit_app.py
 
 | 버전 | 주요 변경 |
 |------|-----------|
-| v9.0 | 입력 레이어 리팩토링 — 멀티소스 fallback (FDR→NAVER→yfinance→캐시), 시장 선택 UI (KOSPI/KOSDAQ/ALL), 컨트롤룸 배지, 상태별 컬러 |
+| v11.2 | 전체 스캔 점수 필터 단일 threshold → 범위 슬라이더 (min ~ max) 변경. UI 점수 범위 표기 가독성 개선 |
+| v11.1 | Chunk + Auto Resume — 100개 단위 청크 분할, chunk_executing 무한루프 방어, 장시간 실행 안정화 |
+| v10.2 | trigger 기반 버튼 안정화 (resume / clear), partial_results 타입 일관화 |
+| v10.0 | Resume Scan 실제 구현 — processed_tickers 기반 이어달리기, run_scan 4-튜플 반환 |
+| v9.2 | partial UX 충돌 3종 수정 |
+| v9.1 | TOP 5 카드 UX (2열 그리드, 점수 강도 이모지), 중간 저장·복구 구조 추가 |
+| v9.0 | 입력 레이어 리팩토링 — 멀티소스 fallback, 시장 선택 UI, 컨트롤룸 배지, 상태별 컬러 |
 | v8.3 | threshold 슬라이더, 튜닝 권고 배너 |
 | v8.2 | 점수 체계 연속화 (0~100) |
 | v8.1 | get_market_ohlcv_by_ticker 기반 전환, processed_count 분리 |
