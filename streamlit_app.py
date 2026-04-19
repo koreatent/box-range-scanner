@@ -1,8 +1,12 @@
 """
-streamlit_app.py — v11.1
+streamlit_app.py — v11.2
 박스권 스캐너 컨트롤룸
 
 변경 이력:
+  v11.2 - 전체 스캔 점수 필터 단일 threshold → 범위 슬라이더 (min~max) 변경
+          run_scan()에는 score_min만 전달 (엔진 안정성 유지)
+          화면 표시 직전 score_max 필터링 적용
+          session_state에 scan_score_min / scan_score_max / ui_score_range 저장
   v11.1 - chunk 단위 전체 스캔 + 자동 이어달리기
           current_chunk_index / chunk_executing 기반 loop guard 추가
           Streamlit Cloud 장시간 실행 안정화
@@ -37,7 +41,9 @@ from box_range_scanner import (
 
 # ── 상수 ──────────────────────────────────────────────────────
 FAST_SCORE_THRESHOLD = 0
-DEFAULT_FULL_THRESHOLD = 70
+DEFAULT_SCORE_MIN = 50
+DEFAULT_SCORE_MAX = 70
+DEFAULT_FULL_THRESHOLD = DEFAULT_SCORE_MIN
 RATIO_HIGH = 20.0
 RATIO_LOW = 10.0
 CHUNK_SIZE = 100
@@ -54,6 +60,9 @@ if "current_chunk_index" not in st.session_state:
 if "chunk_executing" not in st.session_state:
     st.session_state["chunk_executing"] = False
 
+if "ui_score_range" not in st.session_state:
+    st.session_state["ui_score_range"] = (DEFAULT_SCORE_MIN, DEFAULT_SCORE_MAX)
+
 # pykrx (종목명 조회 / 빠른 스캔 거래량 상위)
 try:
     from pykrx import stock as krx_stock
@@ -66,9 +75,9 @@ except ImportError:
 # ── 유틸 ──────────────────────────────────────────────────────
 def calc_suggested_threshold(current, ratio):
     if ratio > RATIO_HIGH:
-        return current + 5, f"후보 비율 {ratio}% > {RATIO_HIGH}% — threshold {current} → {current+5} 권고"
+        return current + 5, f"후보 비율 {ratio}% > {RATIO_HIGH}% — 하한값(score_min) {current} → {current+5} 권고"
     if ratio < RATIO_LOW:
-        return current - 5, f"후보 비율 {ratio}% < {RATIO_LOW}% — threshold {current} → {current-5} 권고"
+        return current - 5, f"후보 비율 {ratio}% < {RATIO_LOW}% — 하한값(score_min) {current} → {current-5} 권고"
     return current, None
 
 
@@ -155,6 +164,24 @@ def _build_chunks(tickers):
     return [tickers[i : i + CHUNK_SIZE] for i in range(0, len(tickers), CHUNK_SIZE)]
 
 
+def _score_range_label(score_min, score_max):
+    return f"{score_min}~{score_max}점"
+
+
+def _get_display_score_range():
+    ui_range = st.session_state.get("ui_score_range")
+    if isinstance(ui_range, (list, tuple)) and len(ui_range) == 2:
+        score_min = int(ui_range[0])
+        score_max = int(ui_range[1])
+    else:
+        score_min = int(st.session_state.get("scan_score_min", DEFAULT_SCORE_MIN) or DEFAULT_SCORE_MIN)
+        score_max = int(st.session_state.get("scan_score_max", DEFAULT_SCORE_MAX) or DEFAULT_SCORE_MAX)
+
+    score_min = max(0, min(100, score_min))
+    score_max = max(score_min, min(100, score_max))
+    return score_min, score_max
+
+
 def _get_saved_processed_tickers():
     processed_tickers = st.session_state.get("processed_tickers") or []
     if processed_tickers:
@@ -188,6 +215,9 @@ def _clear_partial_state():
         "scan_threshold_used": 0,
         "tune_msg": None,
         "suggested_threshold": DEFAULT_FULL_THRESHOLD,
+        "scan_score_min": DEFAULT_SCORE_MIN,
+        "scan_score_max": DEFAULT_SCORE_MAX,
+        "ui_score_range": (DEFAULT_SCORE_MIN, DEFAULT_SCORE_MAX),
         "trigger_resume": False,
         "trigger_clear": False,
         "current_chunk_index": 0,
@@ -197,9 +227,12 @@ def _clear_partial_state():
     st.session_state.pop("result", None)
 
 
-def _run_full_scan(scan_market, full_threshold, resume=False):
+def _run_full_scan(scan_market, score_min, score_max=None, resume=False):
     """전체 스캔 실행/재개 공통 루틴"""
     if not resume:
+        if score_max is None:
+            score_max = DEFAULT_SCORE_MAX
+
         with st.spinner(f"{scan_market} 종목 목록 수집 중..."):
             ticker_result = get_market_tickers(scan_market)
 
@@ -224,7 +257,7 @@ def _run_full_scan(scan_market, full_threshold, resume=False):
             return
 
         total = len(tickers)
-        st.info(f"{scan_market} {total}개 종목 스캔 시작 (threshold: {full_threshold}점 이상)")
+        st.info(f"{scan_market} {total}개 종목 스캔 시작 (점수 범위: {_score_range_label(score_min, score_max)})")
 
         st.session_state.update(
             {
@@ -235,7 +268,9 @@ def _run_full_scan(scan_market, full_threshold, resume=False):
                 "scan_processed": 0,
                 "scan_fail": 0,
                 "scan_ratio": 0,
-                "scan_threshold_used": full_threshold,
+                "scan_threshold_used": score_min,
+                "scan_score_min": score_min,
+                "scan_score_max": score_max,
                 "scan_ticker_src": ticker_src,
                 "scan_ticker_cache_date": ticker_cache_date,
                 "scan_all_tickers": tickers,
@@ -252,6 +287,12 @@ def _run_full_scan(scan_market, full_threshold, resume=False):
             }
         )
         st.session_state.pop("result", None)
+
+    score_min = st.session_state.get("scan_score_min", score_min)
+    if score_max is None:
+        score_max = st.session_state.get("scan_score_max", DEFAULT_SCORE_MAX)
+    else:
+        score_max = st.session_state.get("scan_score_max", score_max)
 
     tickers = st.session_state.get("scan_all_tickers") or st.session_state.get("scan_tickers") or []
     ticker_src = st.session_state.get("scan_ticker_src", "-")
@@ -284,7 +325,7 @@ def _run_full_scan(scan_market, full_threshold, resume=False):
         processed_total = int(st.session_state.get("scan_processed", 0) or 0)
         fail_total = int(st.session_state.get("scan_fail", 0) or 0)
         ratio = round(len(final_df) / processed_total * 100, 1) if processed_total > 0 else 0
-        suggested, tune_msg = calc_suggested_threshold(full_threshold, ratio)
+        suggested, tune_msg = calc_suggested_threshold(score_min, ratio)
 
         st.session_state.update(
             {
@@ -299,7 +340,9 @@ def _run_full_scan(scan_market, full_threshold, resume=False):
                 "scan_price_src": st.session_state.get("scan_price_src", "-"),
                 "scan_cache_date": st.session_state.get("scan_cache_date"),
                 "scan_ratio": ratio,
-                "scan_threshold_used": full_threshold,
+                "scan_threshold_used": score_min,
+                "scan_score_min": score_min,
+                "scan_score_max": score_max,
                 "suggested_threshold": suggested,
                 "tune_msg": tune_msg,
                 "scan_running": False,
@@ -318,10 +361,13 @@ def _run_full_scan(scan_market, full_threshold, resume=False):
     if resume:
         st.info(
             f"이어달리기 진행 중 — chunk {current_chunk_index + 1} / {len(chunks)} "
-            f"| 현재 진행 {len(processed_tickers_base)} / {total}"
+            f"| 현재 진행 {len(processed_tickers_base)} / {total} | 범위 {_score_range_label(score_min, score_max)}"
         )
     else:
-        st.info(f"chunk {current_chunk_index + 1} / {len(chunks)} 실행 중 — {len(current_chunk)}개 종목")
+        st.info(
+            f"chunk {current_chunk_index + 1} / {len(chunks)} 실행 중 — "
+            f"{len(current_chunk)}개 종목 | 범위 {_score_range_label(score_min, score_max)}"
+        )
 
     start = _get_date(90)
     end = _get_date(1)
@@ -356,7 +402,9 @@ def _run_full_scan(scan_market, full_threshold, resume=False):
             "scan_cache_date": cache_date,
             "scan_market": scan_market,
             "scan_mode": "full",
-            "scan_threshold_used": full_threshold,
+            "scan_threshold_used": score_min,
+            "scan_score_min": score_min,
+            "scan_score_max": score_max,
             "scan_total": total,
             "scan_all_tickers": tickers,
             "scan_tickers": tickers,
@@ -392,7 +440,7 @@ def _run_full_scan(scan_market, full_threshold, resume=False):
         df_chunk, processed_count_chunk, fail_count_chunk, processed_tickers_chunk = run_scan(
             tickers=current_chunk,
             progress_callback=update_progress,
-            score_threshold=full_threshold,
+            score_threshold=score_min,
             price_source_info=price_info,
             partial_callback=save_partial_state,
             save_every=5,
@@ -410,7 +458,7 @@ def _run_full_scan(scan_market, full_threshold, resume=False):
     current_rows = st.session_state.get("partial_results") or []
     merged_df = _merge_result_rows(current_rows, df_chunk)
     ratio = round(len(merged_df) / processed_total * 100, 1) if processed_total > 0 else 0
-    suggested, tune_msg = calc_suggested_threshold(full_threshold, ratio)
+    suggested, tune_msg = calc_suggested_threshold(score_min, ratio)
     next_chunk_index = current_chunk_index + 1
     remaining_after_chunk = [ticker for ticker in tickers if ticker not in set(merged_processed_tickers)]
 
@@ -431,7 +479,9 @@ def _run_full_scan(scan_market, full_threshold, resume=False):
                 "scan_price_src": price_src,
                 "scan_cache_date": cache_date,
                 "scan_ratio": ratio,
-                "scan_threshold_used": full_threshold,
+                "scan_threshold_used": score_min,
+                "scan_score_min": score_min,
+                "scan_score_max": score_max,
                 "suggested_threshold": suggested,
                 "tune_msg": tune_msg,
                 "scan_running": False,
@@ -459,7 +509,9 @@ def _run_full_scan(scan_market, full_threshold, resume=False):
             "scan_price_src": price_src,
             "scan_cache_date": cache_date,
             "scan_ratio": ratio,
-            "scan_threshold_used": full_threshold,
+            "scan_threshold_used": score_min,
+            "scan_score_min": score_min,
+            "scan_score_max": score_max,
             "suggested_threshold": suggested,
             "tune_msg": tune_msg,
             "scan_running": True,
@@ -499,21 +551,22 @@ if is_full_scan:
         market_choice, market_choice
     )
     st.sidebar.info(f"{market_label} 전종목 스캔\n소요 시간: 수 분 예상")
-    default_thresh = st.session_state.get("suggested_threshold", DEFAULT_FULL_THRESHOLD)
-    full_threshold = st.sidebar.slider(
-        "박스권 점수 threshold",
-        min_value=40,
-        max_value=95,
-        value=default_thresh,
+    score_min, score_max = st.sidebar.slider(
+        "박스권 점수 범위",
+        min_value=0,
+        max_value=100,
+        value=st.session_state.get("ui_score_range", (DEFAULT_SCORE_MIN, DEFAULT_SCORE_MAX)),
         step=5,
-        help="이 점수 이상인 종목만 결과에 표시됩니다.",
+        help="이 범위에 해당하는 박스권 점수 종목만 표시합니다.",
     )
-    st.sidebar.caption(f"현재: {full_threshold}점 이상 | 목표 비율: {RATIO_LOW}~{RATIO_HIGH}%")
-    st.caption(f"🔍 전체 스캔 모드 ({market_choice}) — threshold: {full_threshold}점 이상")
+    st.session_state["ui_score_range"] = (score_min, score_max)
+    st.sidebar.caption(f"현재: {_score_range_label(score_min, score_max)} | 목표 비율: {RATIO_LOW}~{RATIO_HIGH}%")
+    st.caption(f"🔍 전체 스캔 모드 ({market_choice}) — 점수 범위: {_score_range_label(score_min, score_max)}")
 else:
     top_n = st.sidebar.slider("후보군 종목 수", min_value=15, max_value=100, value=50, step=5)
     st.caption(f"⚡ 빠른 스캔 모드 ({market_choice}) — 거래량 상위 후보군 분석")
-    full_threshold = DEFAULT_FULL_THRESHOLD
+    score_min = DEFAULT_FULL_THRESHOLD
+    score_max = 100
 
 # ── 복구/이어달리기 화면 ─────────────────────────────────────
 _saved_processed_tickers = _get_saved_processed_tickers()
@@ -558,7 +611,7 @@ btn_label = f"🔍 {market_choice} 전체 스캔 시작" if is_full_scan else f"
 if st.button(btn_label, use_container_width=True):
     if is_full_scan:
         st.session_state["chunk_executing"] = True
-        _run_full_scan(scan_market=market_choice, full_threshold=full_threshold, resume=False)
+        _run_full_scan(scan_market=market_choice, score_min=score_min, score_max=score_max, resume=False)
     else:
         with st.spinner("분석 중..."):
             try:
@@ -625,6 +678,8 @@ if st.button(btn_label, use_container_width=True):
                         "scan_threshold_used": FAST_SCORE_THRESHOLD,
                         "tune_msg": None,
                         "suggested_threshold": DEFAULT_FULL_THRESHOLD,
+                        "scan_score_min": FAST_SCORE_THRESHOLD,
+                        "scan_score_max": 100,
                         "partial_results": [],
                         "processed_tickers": [],
                         "scan_all_tickers": [],
@@ -659,7 +714,8 @@ if st.session_state.get("trigger_resume"):
     st.session_state["chunk_executing"] = True
     _run_full_scan(
         scan_market=st.session_state.get("scan_market", market_choice),
-        full_threshold=st.session_state.get("scan_threshold_used", DEFAULT_FULL_THRESHOLD),
+        score_min=st.session_state.get("scan_score_min", DEFAULT_FULL_THRESHOLD),
+        score_max=st.session_state.get("scan_score_max", DEFAULT_SCORE_MAX),
         resume=True,
     )
 
@@ -672,7 +728,8 @@ if (
     st.session_state["chunk_executing"] = True
     _run_full_scan(
         scan_market=st.session_state.get("scan_market", market_choice),
-        full_threshold=st.session_state.get("scan_threshold_used", DEFAULT_FULL_THRESHOLD),
+        score_min=st.session_state.get("scan_score_min", DEFAULT_FULL_THRESHOLD),
+        score_max=st.session_state.get("scan_score_max", DEFAULT_SCORE_MAX),
         resume=True,
     )
 
@@ -693,16 +750,18 @@ else:
     display_df = None
 
 if display_df is not None:
-    df = display_df
     mode = st.session_state.get("scan_mode", "fast")
+    df = display_df.copy()
+    display_score_min, display_score_max = _get_display_score_range()
+    score_range_label = _score_range_label(display_score_min, display_score_max)
+    if mode == "full" and "점수" in df.columns:
+        df = df[(df["점수"] >= display_score_min) & (df["점수"] <= display_score_max)].copy()
     scanned = st.session_state.get("scan_total", 0)
     processed = st.session_state.get("scan_processed", 0)
     fail = st.session_state.get("scan_fail", 0)
     is_fb = st.session_state.get("scan_fallback", False)
-    ratio = round(len(df) / processed * 100, 1) if _is_partial and processed > 0 else (
-        0 if _is_partial else st.session_state.get("scan_ratio", 0)
-    )
-    used_thresh = st.session_state.get("scan_threshold_used", 0)
+    ratio = round(len(df) / processed * 100, 1) if processed > 0 else 0
+    used_score_min = st.session_state.get("scan_score_min", DEFAULT_FULL_THRESHOLD)
     tune_msg = st.session_state.get("tune_msg", None)
     found = len(df)
     market = st.session_state.get("scan_market", "KOSPI")
@@ -723,11 +782,11 @@ if display_df is not None:
     col4.metric("박스권 후보", f"{found}개  ({ratio}%)")
 
     if tune_msg and not _is_partial:
-        suggested = st.session_state.get("suggested_threshold", used_thresh)
+        suggested = st.session_state.get("suggested_threshold", used_score_min)
         if ratio > RATIO_HIGH:
-            st.warning(f"⚠️ {tune_msg}\n\n사이드바 슬라이더를 **{suggested}**으로 조정 후 재스캔하세요.")
+            st.warning(f"⚠️ {tune_msg}\n\n하한값(score_min)을 **{suggested}**으로 조정 후 재스캔하세요.")
         else:
-            st.info(f"ℹ️ {tune_msg}\n\n사이드바 슬라이더를 **{suggested}**으로 조정 후 재스캔하세요.")
+            st.info(f"ℹ️ {tune_msg}\n\n하한값(score_min)을 **{suggested}**으로 조정 후 재스캔하세요.")
 
     if st.session_state.get("scan_interrupted") is True:
         st.error("스캔 중 오류 발생 — 아래는 저장된 부분 결과입니다.")
@@ -736,13 +795,16 @@ if display_df is not None:
         st.warning("⚠️ 전체 스캔이 완료되기 전 중단되었습니다. 아래는 부분 결과입니다.")
 
     if df.empty:
-        st.warning(f"조건에 맞는 종목 없음 — threshold {used_thresh}점 이상 박스권 종목이 없습니다.")
+        if mode == "full":
+            st.warning(f"조건에 맞는 종목 없음 — {score_range_label} 범위 내 종목이 없습니다.")
+        else:
+            st.warning("조건에 맞는 종목 없음 — 박스권 종목이 없습니다.")
     else:
         if not _is_partial:
             if mode == "full" and not is_fb:
-                st.success(f"{market} {scanned}개 중 **{found}개** 박스권 후보 ({ratio}%) | threshold {used_thresh}점")
-            elif is_fb:
-                st.error(f"🚨 제한 모드 — {scanned}개 중 **{found}개** 후보 ({ratio}%) | threshold {used_thresh}점")
+                st.success(f"{market} {scanned}개 중 **{found}개** 박스권 후보 ({ratio}%) | {score_range_label} 범위")
+            elif mode == "full" and is_fb:
+                st.error(f"🚨 제한 모드 — {scanned}개 중 **{found}개** 후보 ({ratio}%) | {score_range_label} 범위")
             else:
                 st.success(f"후보군 {scanned}개 분석 완료 — **{found}개** 결과 ({ratio}%)")
 
@@ -780,7 +842,10 @@ if display_df is not None:
 
         st.divider()
         st.subheader("박스권 후보")
-        st.caption(f"threshold {used_thresh}점 이상 | 높을수록 박스권 가능성 높음 (100점 최고) | 시장: {market}")
+        if mode == "full":
+            st.caption(f"{score_range_label} 범위 | 높을수록 박스권 가능성 높음 (100점 최고) | 시장: {market}")
+        else:
+            st.caption(f"높을수록 박스권 가능성 높음 (100점 최고) | 시장: {market}")
         st.dataframe(df, use_container_width=True, hide_index=True)
         st.divider()
 
