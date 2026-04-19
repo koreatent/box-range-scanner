@@ -1,8 +1,11 @@
 """
-streamlit_app.py — v10.2
+streamlit_app.py — v11.1
 박스권 스캐너 컨트롤룸
 
 변경 이력:
+  v11.1 - chunk 단위 전체 스캔 + 자동 이어달리기
+          current_chunk_index / chunk_executing 기반 loop guard 추가
+          Streamlit Cloud 장시간 실행 안정화
   v10.2 - resume / clear 버튼 trigger 기반 실행으로 안정화
           partial_results records 저장 구조 일관화
           Streamlit rerun 이후 결과 유지 보강
@@ -20,16 +23,16 @@ streamlit_app.py — v10.2
   v8.3 - threshold 슬라이더, 튜닝 권고 배너
 """
 
-import streamlit as st
 import pandas as pd
+import streamlit as st
 
 from box_range_scanner import (
-    run_scan,
+    FALLBACK_KOSDAQ,
+    FALLBACK_KOSPI,
+    _get_date,
     get_market_tickers,
     get_price_source_for_scan,
-    FALLBACK_KOSPI,
-    FALLBACK_KOSDAQ,
-    _get_date,
+    run_scan,
 )
 
 # ── 상수 ──────────────────────────────────────────────────────
@@ -37,6 +40,7 @@ FAST_SCORE_THRESHOLD = 0
 DEFAULT_FULL_THRESHOLD = 70
 RATIO_HIGH = 20.0
 RATIO_LOW = 10.0
+CHUNK_SIZE = 100
 
 if "trigger_resume" not in st.session_state:
     st.session_state["trigger_resume"] = False
@@ -44,9 +48,16 @@ if "trigger_resume" not in st.session_state:
 if "trigger_clear" not in st.session_state:
     st.session_state["trigger_clear"] = False
 
+if "current_chunk_index" not in st.session_state:
+    st.session_state["current_chunk_index"] = 0
+
+if "chunk_executing" not in st.session_state:
+    st.session_state["chunk_executing"] = False
+
 # pykrx (종목명 조회 / 빠른 스캔 거래량 상위)
 try:
     from pykrx import stock as krx_stock
+
     _KRX_AVAILABLE = True
 except ImportError:
     _KRX_AVAILABLE = False
@@ -112,6 +123,7 @@ def _merge_result_rows(existing_rows, new_df):
             frames.append(existing_rows.copy())
     elif existing_rows:
         frames.append(pd.DataFrame(existing_rows))
+
     if new_df is not None and not new_df.empty:
         frames.append(new_df.copy())
 
@@ -137,6 +149,10 @@ def _merge_processed_tickers(existing_tickers, new_tickers):
             seen.add(ticker)
             merged.append(ticker)
     return merged
+
+
+def _build_chunks(tickers):
+    return [tickers[i : i + CHUNK_SIZE] for i in range(0, len(tickers), CHUNK_SIZE)]
 
 
 def _get_saved_processed_tickers():
@@ -174,6 +190,8 @@ def _clear_partial_state():
         "suggested_threshold": DEFAULT_FULL_THRESHOLD,
         "trigger_resume": False,
         "trigger_clear": False,
+        "current_chunk_index": 0,
+        "chunk_executing": False,
     }.items():
         st.session_state[key] = val
     st.session_state.pop("result", None)
@@ -181,51 +199,17 @@ def _clear_partial_state():
 
 def _run_full_scan(scan_market, full_threshold, resume=False):
     """전체 스캔 실행/재개 공통 루틴"""
-    if resume:
-        tickers = st.session_state.get("scan_all_tickers") or st.session_state.get("scan_tickers") or []
-        ticker_src = st.session_state.get("scan_ticker_src", "-")
-        ticker_cache_date = st.session_state.get("scan_ticker_cache_date")
-        is_fallback = st.session_state.get("scan_fallback", False)
-        processed_tickers_base = _get_saved_processed_tickers()
-        partial_rows = st.session_state.get("partial_results") or []
+    if not resume:
+        with st.spinner(f"{scan_market} 종목 목록 수집 중..."):
+            ticker_result = get_market_tickers(scan_market)
 
-        if not tickers:
-            st.error("이어달리기 실패 — 저장된 ticker 목록이 없습니다. 새 스캔을 시작해주세요.")
-            return
+        tickers = ticker_result["tickers"]
+        ticker_src = ticker_result["source"]
+        ticker_logs = ticker_result["log"]
+        ticker_cache_date = ticker_result.get("cache_date")
+        is_fallback = ticker_src == "FALLBACK"
 
-        processed_lookup = set(processed_tickers_base)
-        remaining_tickers = [ticker for ticker in tickers if ticker not in processed_lookup]
-        progress_offset = len(processed_tickers_base)
-        total = len(tickers)
-
-        if not remaining_tickers:
-            final_df = _merge_result_rows(partial_rows, None)
-            processed_total = int(st.session_state.get("scan_processed", 0) or 0)
-            ratio = round(len(final_df) / processed_total * 100, 1) if processed_total > 0 else 0
-            st.session_state.update({
-                "result": final_df,
-                "partial_results": final_df.to_dict("records"),
-                "processed_tickers": processed_tickers_base,
-                "scan_progress": total,
-                "scan_total": total,
-                "scan_ratio": ratio,
-                "scan_running": False,
-                "scan_interrupted": False,
-            })
-            st.info("이미 처리한 ticker를 제외하면 남은 종목이 없습니다. 저장된 결과를 표시합니다.")
-            return
-
-        processed_base = int(st.session_state.get("scan_processed", 0) or 0)
-        fail_base = int(st.session_state.get("scan_fail", 0) or 0)
-
-        st.info(f"이어달리기 시작 — {progress_offset} / {total} 처리 완료, 남은 {len(remaining_tickers)}개 종목 재개")
-
-        start = _get_date(90)
-        end = _get_date(1)
-        with st.spinner("가격 데이터 소스 확인 중..."):
-            price_info = get_price_source_for_scan(remaining_tickers, start, end)
-
-        for log in price_info["log"]:
+        for log in ticker_logs:
             if log.startswith("[INFO]"):
                 st.success(log)
             elif log.startswith("[WARN]"):
@@ -233,61 +217,209 @@ def _run_full_scan(scan_market, full_threshold, resume=False):
             elif log.startswith("[ERROR]"):
                 st.error(log)
 
-        price_src = price_info["source"]
-        price_cache_date = price_info.get("cache_date")
-        cache_date = ticker_cache_date or price_cache_date
+        if not tickers:
+            st.session_state["scan_running"] = False
+            st.session_state["chunk_executing"] = False
+            st.error("종목 수집 전체 실패 — 잠시 후 재시도 해주세요.")
+            return
 
-        st.session_state.update({
+        total = len(tickers)
+        st.info(f"{scan_market} {total}개 종목 스캔 시작 (threshold: {full_threshold}점 이상)")
+
+        st.session_state.update(
+            {
+                "scan_running": True,
+                "scan_market": scan_market,
+                "scan_mode": "full",
+                "scan_total": total,
+                "scan_processed": 0,
+                "scan_fail": 0,
+                "scan_ratio": 0,
+                "scan_threshold_used": full_threshold,
+                "scan_ticker_src": ticker_src,
+                "scan_ticker_cache_date": ticker_cache_date,
+                "scan_all_tickers": tickers,
+                "scan_tickers": tickers,
+                "scan_price_src": "-",
+                "scan_cache_date": ticker_cache_date,
+                "scan_fallback": is_fallback,
+                "partial_results": [],
+                "processed_tickers": [],
+                "scan_progress": 0,
+                "scan_interrupted": False,
+                "current_chunk_index": 0,
+                "chunk_executing": True,
+            }
+        )
+        st.session_state.pop("result", None)
+
+    tickers = st.session_state.get("scan_all_tickers") or st.session_state.get("scan_tickers") or []
+    ticker_src = st.session_state.get("scan_ticker_src", "-")
+    ticker_cache_date = st.session_state.get("scan_ticker_cache_date")
+    is_fallback = st.session_state.get("scan_fallback", False)
+    partial_rows = st.session_state.get("partial_results") or []
+    processed_tickers_base = _get_saved_processed_tickers()
+
+    if not tickers:
+        st.session_state["scan_running"] = False
+        st.session_state["chunk_executing"] = False
+        st.error("이어달리기 실패 — 저장된 ticker 목록이 없습니다. 새 스캔을 시작해주세요.")
+        return
+
+    total = len(tickers)
+    chunks = _build_chunks(tickers)
+    processed_lookup = set(processed_tickers_base)
+    remaining_tickers = [ticker for ticker in tickers if ticker not in processed_lookup]
+    current_chunk_index = int(st.session_state.get("current_chunk_index", 0) or 0)
+
+    while current_chunk_index < len(chunks):
+        current_chunk = [ticker for ticker in chunks[current_chunk_index] if ticker not in processed_lookup]
+        if current_chunk:
+            break
+        current_chunk_index += 1
+        st.session_state["current_chunk_index"] = current_chunk_index
+
+    if not remaining_tickers or current_chunk_index >= len(chunks):
+        final_df = _merge_result_rows(partial_rows, None)
+        processed_total = int(st.session_state.get("scan_processed", 0) or 0)
+        fail_total = int(st.session_state.get("scan_fail", 0) or 0)
+        ratio = round(len(final_df) / processed_total * 100, 1) if processed_total > 0 else 0
+        suggested, tune_msg = calc_suggested_threshold(full_threshold, ratio)
+
+        st.session_state.update(
+            {
+                "result": final_df,
+                "scan_total": total,
+                "scan_processed": processed_total,
+                "scan_fail": fail_total,
+                "scan_mode": "full",
+                "scan_fallback": is_fallback,
+                "scan_market": scan_market,
+                "scan_ticker_src": ticker_src,
+                "scan_price_src": st.session_state.get("scan_price_src", "-"),
+                "scan_cache_date": st.session_state.get("scan_cache_date"),
+                "scan_ratio": ratio,
+                "scan_threshold_used": full_threshold,
+                "suggested_threshold": suggested,
+                "tune_msg": tune_msg,
+                "scan_running": False,
+                "scan_interrupted": False,
+                "chunk_executing": False,
+                "partial_results": final_df.to_dict("records"),
+                "processed_tickers": processed_tickers_base,
+                "scan_progress": len(processed_tickers_base),
+                "scan_all_tickers": tickers,
+                "scan_tickers": tickers,
+                "current_chunk_index": len(chunks),
+            }
+        )
+        return
+
+    if resume:
+        st.info(
+            f"이어달리기 진행 중 — chunk {current_chunk_index + 1} / {len(chunks)} "
+            f"| 현재 진행 {len(processed_tickers_base)} / {total}"
+        )
+    else:
+        st.info(f"chunk {current_chunk_index + 1} / {len(chunks)} 실행 중 — {len(current_chunk)}개 종목")
+
+    start = _get_date(90)
+    end = _get_date(1)
+    try:
+        with st.spinner("가격 데이터 소스 확인 중..."):
+            price_info = get_price_source_for_scan(current_chunk, start, end)
+    except Exception as e:
+        st.session_state["scan_running"] = False
+        st.session_state["scan_interrupted"] = True
+        st.session_state["chunk_executing"] = False
+        st.error(f"가격 데이터 소스 확인 중 오류: {e}")
+        return
+
+    for log in price_info["log"]:
+        if log.startswith("[INFO]"):
+            st.success(log)
+        elif log.startswith("[WARN]"):
+            st.warning(log)
+        elif log.startswith("[ERROR]"):
+            st.error(log)
+
+    price_src = price_info["source"]
+    price_cache_date = price_info.get("cache_date")
+    cache_date = ticker_cache_date or price_cache_date
+
+    st.session_state.update(
+        {
             "scan_running": True,
             "scan_interrupted": False,
+            "chunk_executing": True,
             "scan_price_src": price_src,
             "scan_cache_date": cache_date,
             "scan_market": scan_market,
+            "scan_mode": "full",
             "scan_threshold_used": full_threshold,
             "scan_total": total,
             "scan_all_tickers": tickers,
             "scan_tickers": tickers,
             "processed_tickers": processed_tickers_base,
-        })
+            "current_chunk_index": current_chunk_index,
+        }
+    )
 
-        progress_bar = st.progress(progress_offset / total if total else 0)
-        status_text = st.empty()
+    processed_base = int(st.session_state.get("scan_processed", 0) or 0)
+    fail_base = int(st.session_state.get("scan_fail", 0) or 0)
+    progress_offset = len(processed_tickers_base)
 
-        def update_progress(current, inner_total, name):
-            absolute_current = progress_offset + current
-            progress_bar.progress(absolute_current / total)
-            status_text.text(f"({absolute_current} / {total}) {name}")
+    progress_bar = st.progress(progress_offset / total if total else 0)
+    status_text = st.empty()
 
-        def save_partial_state(partial_rows_new, processed_count, fail_count, current_index, total, processed_tickers):
-            merged_df = _merge_result_rows(partial_rows, pd.DataFrame(partial_rows_new))
-            merged_processed_tickers = _merge_processed_tickers(processed_tickers_base, processed_tickers)
-            st.session_state["partial_results"] = merged_df.to_dict("records")
-            st.session_state["processed_tickers"] = merged_processed_tickers
-            st.session_state["scan_processed"] = processed_base + processed_count
-            st.session_state["scan_fail"] = fail_base + fail_count
-            st.session_state["scan_progress"] = len(merged_processed_tickers)
-            st.session_state["scan_total"] = len(tickers)
+    def update_progress(current, inner_total, name):
+        absolute_current = progress_offset + current
+        progress_bar.progress(absolute_current / total)
+        status_text.text(f"({absolute_current} / {total}) {name}")
 
-        try:
-            df_new, processed_count_new, fail_count_new, processed_tickers_new = run_scan(
-                tickers=remaining_tickers,
-                progress_callback=update_progress,
-                score_threshold=full_threshold,
-                price_source_info=price_info,
-                partial_callback=save_partial_state,
-                save_every=10,
-            )
-            progress_bar.progress(1.0)
-            status_text.text("스캔 완료")
+    def save_partial_state(partial_rows, processed_count, fail_count, current_index, total, processed_tickers):
+        current_rows = st.session_state.get("partial_results") or []
+        merged_df = _merge_result_rows(current_rows, pd.DataFrame(partial_rows))
+        merged_processed_tickers = _merge_processed_tickers(processed_tickers_base, processed_tickers)
+        st.session_state["partial_results"] = merged_df.to_dict("records")
+        st.session_state["processed_tickers"] = merged_processed_tickers
+        st.session_state["scan_processed"] = processed_base + processed_count
+        st.session_state["scan_fail"] = fail_base + fail_count
+        st.session_state["scan_progress"] = len(merged_processed_tickers)
+        st.session_state["scan_total"] = len(tickers)
 
-            merged_df = _merge_result_rows(partial_rows, df_new)
-            merged_processed_tickers = _merge_processed_tickers(processed_tickers_base, processed_tickers_new)
-            processed_total = processed_base + processed_count_new
-            fail_total = fail_base + fail_count_new
-            ratio = round(len(merged_df) / processed_total * 100, 1) if processed_total > 0 else 0
-            suggested, tune_msg = calc_suggested_threshold(full_threshold, ratio)
+    try:
+        df_chunk, processed_count_chunk, fail_count_chunk, processed_tickers_chunk = run_scan(
+            tickers=current_chunk,
+            progress_callback=update_progress,
+            score_threshold=full_threshold,
+            price_source_info=price_info,
+            partial_callback=save_partial_state,
+            save_every=5,
+        )
+    except Exception as e:
+        st.session_state["scan_running"] = False
+        st.session_state["scan_interrupted"] = True
+        st.session_state["chunk_executing"] = False
+        st.error(f"스캔 중 오류: {e}")
+        return
 
-            st.session_state.update({
+    merged_processed_tickers = _merge_processed_tickers(processed_tickers_base, processed_tickers_chunk)
+    processed_total = processed_base + processed_count_chunk
+    fail_total = fail_base + fail_count_chunk
+    current_rows = st.session_state.get("partial_results") or []
+    merged_df = _merge_result_rows(current_rows, df_chunk)
+    ratio = round(len(merged_df) / processed_total * 100, 1) if processed_total > 0 else 0
+    suggested, tune_msg = calc_suggested_threshold(full_threshold, ratio)
+    next_chunk_index = current_chunk_index + 1
+    remaining_after_chunk = [ticker for ticker in tickers if ticker not in set(merged_processed_tickers)]
+
+    progress_bar.progress(len(merged_processed_tickers) / total if total else 0)
+    status_text.text(f"chunk {current_chunk_index + 1} / {len(chunks)} 완료")
+
+    if not remaining_after_chunk or next_chunk_index >= len(chunks):
+        st.session_state.update(
+            {
                 "result": merged_df,
                 "scan_total": total,
                 "scan_processed": processed_total,
@@ -304,117 +436,22 @@ def _run_full_scan(scan_market, full_threshold, resume=False):
                 "tune_msg": tune_msg,
                 "scan_running": False,
                 "scan_interrupted": False,
+                "chunk_executing": False,
                 "partial_results": merged_df.to_dict("records"),
                 "processed_tickers": merged_processed_tickers,
                 "scan_progress": len(merged_processed_tickers),
                 "scan_all_tickers": tickers,
                 "scan_tickers": tickers,
-            })
-        except Exception as e:
-            st.session_state["scan_running"] = False
-            st.session_state["scan_interrupted"] = True
-            st.error(f"이어달리기 중 오류: {e}")
-        return
-
-    with st.spinner(f"{scan_market} 종목 목록 수집 중..."):
-        ticker_result = get_market_tickers(scan_market)
-
-    tickers = ticker_result["tickers"]
-    ticker_src = ticker_result["source"]
-    ticker_logs = ticker_result["log"]
-    ticker_cache_date = ticker_result.get("cache_date")
-    is_fallback = (ticker_src == "FALLBACK")
-
-    for log in ticker_logs:
-        if log.startswith("[INFO]"):
-            st.success(log)
-        elif log.startswith("[WARN]"):
-            st.warning(log)
-        elif log.startswith("[ERROR]"):
-            st.error(log)
-
-    if not tickers:
-        st.error("종목 수집 전체 실패 — 잠시 후 재시도 해주세요.")
-        return
-
-    start = _get_date(90)
-    end = _get_date(1)
-    with st.spinner("가격 데이터 소스 확인 중..."):
-        price_info = get_price_source_for_scan(tickers, start, end)
-
-    for log in price_info["log"]:
-        if log.startswith("[INFO]"):
-            st.success(log)
-        elif log.startswith("[WARN]"):
-            st.warning(log)
-        elif log.startswith("[ERROR]"):
-            st.error(log)
-
-    price_src = price_info["source"]
-    price_cache_date = price_info.get("cache_date")
-    cache_date = ticker_cache_date or price_cache_date
-
-    total = len(tickers)
-    st.info(f"{scan_market} {total}개 종목 스캔 시작 (threshold: {full_threshold}점 이상)")
-
-    st.session_state.update({
-        "scan_running": True,
-        "scan_market": scan_market,
-        "scan_mode": "full",
-        "scan_total": total,
-        "scan_processed": 0,
-        "scan_fail": 0,
-        "scan_ratio": 0,
-        "scan_threshold_used": full_threshold,
-        "scan_ticker_src": ticker_src,
-        "scan_ticker_cache_date": ticker_cache_date,
-        "scan_all_tickers": tickers,
-        "scan_tickers": tickers,
-        "scan_price_src": price_src,
-        "scan_cache_date": cache_date,
-        "scan_fallback": is_fallback,
-        "partial_results": [],
-        "processed_tickers": [],
-        "scan_progress": 0,
-        "scan_interrupted": False,
-    })
-    st.session_state.pop("result", None)
-
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-
-    def update_progress(current, total, name):
-        progress_bar.progress(current / total)
-        status_text.text(f"({current} / {total}) {name}")
-
-    def save_partial_state(partial_rows, processed_count, fail_count, current_index, total, processed_tickers):
-        st.session_state["partial_results"] = pd.DataFrame(partial_rows).to_dict("records")
-        st.session_state["processed_tickers"] = processed_tickers
-        st.session_state["scan_processed"] = processed_count
-        st.session_state["scan_fail"] = fail_count
-        st.session_state["scan_progress"] = len(processed_tickers)
-        st.session_state["scan_total"] = total
-
-    try:
-        df, processed_count, fail_count, processed_tickers = run_scan(
-            tickers=tickers,
-            progress_callback=update_progress,
-            score_threshold=full_threshold,
-            price_source_info=price_info,
-            partial_callback=save_partial_state,
-            save_every=10,
+                "current_chunk_index": len(chunks),
+            }
         )
-        progress_bar.progress(1.0)
-        status_text.text("스캔 완료")
+        return
 
-        ratio = round(len(df) / processed_count * 100, 1) if processed_count > 0 else 0
-        suggested, tune_msg = calc_suggested_threshold(full_threshold, ratio)
-
-        st.session_state.update({
-            "result": df,
+    st.session_state.update(
+        {
             "scan_total": total,
-            "scan_processed": processed_count,
-            "scan_fail": fail_count,
+            "scan_processed": processed_total,
+            "scan_fail": fail_total,
             "scan_mode": "full",
             "scan_fallback": is_fallback,
             "scan_market": scan_market,
@@ -425,18 +462,18 @@ def _run_full_scan(scan_market, full_threshold, resume=False):
             "scan_threshold_used": full_threshold,
             "suggested_threshold": suggested,
             "tune_msg": tune_msg,
-            "scan_running": False,
+            "scan_running": True,
             "scan_interrupted": False,
-            "partial_results": df.to_dict("records"),
-            "processed_tickers": processed_tickers,
-            "scan_progress": len(processed_tickers),
+            "chunk_executing": False,
+            "partial_results": merged_df.to_dict("records"),
+            "processed_tickers": merged_processed_tickers,
+            "scan_progress": len(merged_processed_tickers),
             "scan_all_tickers": tickers,
             "scan_tickers": tickers,
-        })
-    except Exception as e:
-        st.session_state["scan_running"] = False
-        st.session_state["scan_interrupted"] = True
-        st.error(f"스캔 중 오류: {e}")
+            "current_chunk_index": next_chunk_index,
+        }
+    )
+    st.rerun()
 
 
 # ── 화면 구성 ──────────────────────────────────────────────────
@@ -458,7 +495,9 @@ scan_mode = st.sidebar.radio(
 is_full_scan = scan_mode.startswith("🔍")
 
 if is_full_scan:
-    market_label = {"KOSPI": "코스피", "KOSDAQ": "코스닥", "ALL": "전체(KOSPI+KOSDAQ)"}.get(market_choice, market_choice)
+    market_label = {"KOSPI": "코스피", "KOSDAQ": "코스닥", "ALL": "전체(KOSPI+KOSDAQ)"}.get(
+        market_choice, market_choice
+    )
     st.sidebar.info(f"{market_label} 전종목 스캔\n소요 시간: 수 분 예상")
     default_thresh = st.session_state.get("suggested_threshold", DEFAULT_FULL_THRESHOLD)
     full_threshold = st.sidebar.slider(
@@ -518,6 +557,7 @@ if show_resume_ui:
 btn_label = f"🔍 {market_choice} 전체 스캔 시작" if is_full_scan else f"⚡ {market_choice} 빠른 스캔 시작"
 if st.button(btn_label, use_container_width=True):
     if is_full_scan:
+        st.session_state["chunk_executing"] = True
         _run_full_scan(scan_market=market_choice, full_threshold=full_threshold, resume=False)
     else:
         with st.spinner("분석 중..."):
@@ -569,29 +609,33 @@ if st.button(btn_label, use_container_width=True):
                 )
                 ratio = round(len(df) / processed_count * 100, 1) if processed_count > 0 else 0
 
-                st.session_state.update({
-                    "result": df,
-                    "scan_total": len(tickers),
-                    "scan_processed": processed_count,
-                    "scan_fail": fail_count,
-                    "scan_mode": "fast",
-                    "scan_fallback": False,
-                    "scan_market": market_choice,
-                    "scan_ticker_src": "PYKRX",
-                    "scan_price_src": price_info["source"],
-                    "scan_cache_date": price_info.get("cache_date"),
-                    "scan_ratio": ratio,
-                    "scan_threshold_used": FAST_SCORE_THRESHOLD,
-                    "tune_msg": None,
-                    "suggested_threshold": DEFAULT_FULL_THRESHOLD,
-                    "partial_results": [],
-                    "processed_tickers": [],
-                    "scan_all_tickers": [],
-                    "scan_tickers": [],
-                    "scan_progress": 0,
-                    "scan_running": False,
-                    "scan_interrupted": False,
-                })
+                st.session_state.update(
+                    {
+                        "result": df,
+                        "scan_total": len(tickers),
+                        "scan_processed": processed_count,
+                        "scan_fail": fail_count,
+                        "scan_mode": "fast",
+                        "scan_fallback": False,
+                        "scan_market": market_choice,
+                        "scan_ticker_src": "PYKRX",
+                        "scan_price_src": price_info["source"],
+                        "scan_cache_date": price_info.get("cache_date"),
+                        "scan_ratio": ratio,
+                        "scan_threshold_used": FAST_SCORE_THRESHOLD,
+                        "tune_msg": None,
+                        "suggested_threshold": DEFAULT_FULL_THRESHOLD,
+                        "partial_results": [],
+                        "processed_tickers": [],
+                        "scan_all_tickers": [],
+                        "scan_tickers": [],
+                        "scan_progress": 0,
+                        "scan_running": False,
+                        "scan_interrupted": False,
+                        "current_chunk_index": 0,
+                        "chunk_executing": False,
+                    }
+                )
             except Exception as e:
                 st.session_state["scan_running"] = False
                 st.session_state["scan_interrupted"] = False
@@ -600,6 +644,8 @@ if st.button(btn_label, use_container_width=True):
                 st.session_state["scan_all_tickers"] = []
                 st.session_state["scan_tickers"] = []
                 st.session_state["scan_progress"] = 0
+                st.session_state["current_chunk_index"] = 0
+                st.session_state["chunk_executing"] = False
                 st.error(f"오류 발생: {e}")
 
 if st.session_state.get("trigger_clear"):
@@ -610,6 +656,20 @@ if st.session_state.get("trigger_clear"):
 
 if st.session_state.get("trigger_resume"):
     st.session_state["trigger_resume"] = False
+    st.session_state["chunk_executing"] = True
+    _run_full_scan(
+        scan_market=st.session_state.get("scan_market", market_choice),
+        full_threshold=st.session_state.get("scan_threshold_used", DEFAULT_FULL_THRESHOLD),
+        resume=True,
+    )
+
+if (
+    st.session_state.get("scan_running")
+    and not st.session_state.get("chunk_executing")
+    and not st.session_state.get("trigger_clear")
+    and not st.session_state.get("trigger_resume")
+):
+    st.session_state["chunk_executing"] = True
     _run_full_scan(
         scan_market=st.session_state.get("scan_market", market_choice),
         full_threshold=st.session_state.get("scan_threshold_used", DEFAULT_FULL_THRESHOLD),
@@ -696,7 +756,7 @@ if display_df is not None:
         st.caption("점수 + 거래량 기준 — 즉시 판단용")
 
         cols_per_row = 2 if top_n_cards >= 4 else top_n_cards
-        rows = [top_df[i:i + cols_per_row] for i in range(0, len(top_df), cols_per_row)]
+        rows = [top_df[i : i + cols_per_row] for i in range(0, len(top_df), cols_per_row)]
 
         for row_df in rows:
             cols = st.columns(len(row_df))
