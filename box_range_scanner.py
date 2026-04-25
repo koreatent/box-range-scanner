@@ -1,10 +1,8 @@
 """
-box_range_scanner.py — v10.0
+box_range_scanner.py — v9.0
 박스권 탐지 모듈
 
 변경 이력:
-  v10.0 - run_scan() 처리 완료 ticker 추적 추가
-          partial_callback에 processed_tickers 전달
   v9.0 - 입력 레이어 리팩토링 (멈추지 않는 스캐너)
          get_market_tickers(market) : FDR → 캐시 → fallback 순 ticker 확보
          get_price_source_for_scan() : FDR-KRX → FDR-NAVER → yfinance → 캐시 순
@@ -313,23 +311,15 @@ def _get_ticker_name(ticker):
 # 4. 메인 스캔
 # ══════════════════════════════════════════════════════════════
 
-def run_scan(tickers=None, progress_callback=None, score_threshold=0, price_source_info=None,
-             partial_callback=None, save_every=10):
+def run_scan(tickers=None, progress_callback=None, score_threshold=0, price_source_info=None):
     """
     박스권 스캔 실행
-    반환: (DataFrame, processed_count, fail_count, processed_tickers)
-
-    processed_tickers:
-        threshold 통과 여부와 무관하게, 실제 스캔 처리가 끝난 ticker 목록
-        실패/skip ticker도 포함하여 resume 시 중복 재스캔을 방지
-
-    partial_callback(partial_rows, processed_count, fail_count, current_index, total, processed_tickers)
-        → save_every 종목 처리마다 호출 (중간 저장용)
+    반환: (DataFrame, processed_count, fail_count)
     """
     if tickers is None:
         tickers = FALLBACK_KOSPI
 
-    start = _get_date(90)
+    start = _get_date(120)
     end   = _get_date(1)
 
     if price_source_info is None:
@@ -340,7 +330,6 @@ def run_scan(tickers=None, progress_callback=None, score_threshold=0, price_sour
     results         = []
     fail_count      = 0
     processed_count = 0
-    processed_tickers = []
 
     for i, t in enumerate(tickers):
         name = _get_ticker_name(t)
@@ -350,40 +339,26 @@ def run_scan(tickers=None, progress_callback=None, score_threshold=0, price_sour
             df = fetch_fn(t, start, end)
             if df is None or df.empty:
                 fail_count += 1
-            elif not {"종가","고가","저가"}.issubset(set(df.columns)):
+                continue
+            if not {"종가","고가","저가"}.issubset(set(df.columns)):
                 fail_count += 1
-            else:
-                processed_count += 1
-                score, reason = analyze_box(df)
-                if score >= score_threshold:
-                    signal = get_breakout_signal(df)
-                    volume = int(df['거래량'].iloc[-1]) if '거래량' in df.columns else 0
-                    results.append({
-                        "종목코드": t, "종목명": name, "점수": score,
-                        "거래량": volume, "이유": reason, "돌파신호": signal,
-                    })
+                continue
+            processed_count += 1
+            score, reason = analyze_box(df)
+            if score < score_threshold:
+                continue
+            signal = get_breakout_signal(df)
+            volume = int(df['거래량'].iloc[-1]) if '거래량' in df.columns else 0
+            results.append({
+                "종목코드": t, "종목명": name, "점수": score,
+                "거래량": volume, "이유": reason, "돌파신호": signal,
+            })
         except Exception:
             fail_count += 1
-        processed_tickers.append(t)
-
-        # ── 중간 저장 (save_every 단위) ──────────────────────
-        if partial_callback and ((i + 1) % save_every == 0 or (i + 1) == total):
-            partial_callback(
-                partial_rows=results.copy(),
-                processed_count=processed_count,
-                fail_count=fail_count,
-                current_index=i + 1,
-                total=total,
-                processed_tickers=processed_tickers.copy(),
-            )
+            continue
 
     if not results:
-        return (
-            pd.DataFrame(columns=["종목코드","종목명","점수","거래량","이유","돌파신호"]),
-            processed_count,
-            fail_count,
-            processed_tickers,
-        )
+        return pd.DataFrame(columns=["종목코드","종목명","점수","거래량","이유","돌파신호"]), processed_count, fail_count
 
     result_df = pd.DataFrame(results).sort_values("점수", ascending=False).reset_index(drop=True)
-    return result_df, processed_count, fail_count, processed_tickers
+    return result_df, processed_count, fail_count
