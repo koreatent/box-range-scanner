@@ -1,8 +1,24 @@
 """
-streamlit_app.py — v11.3
+streamlit_app.py — v11.5
 박스권 스캐너 컨트롤룸
 
 변경 이력:
+  v11.5 - 점수 신뢰도 검증 데이터 수집 기능 추가
+          차트 하단 판단 버튼 (👍/🤔/👎) 추가
+          validation_log session_state 누적 저장 (중복 overwrite)
+          점수 구간별 검증 통계 표시 (80점↑ / 70~79 / 70점↓)
+          검증 데이터 CSV 다운로드 버튼 추가
+          검증 초기화 버튼 추가
+          [안정화] 최소 샘플 수 경고 (20개 미만)
+          [안정화] 총 검증 데이터 개수 표시
+          [안정화] 현재 종목 판단 기록 → 버튼 위로 이동
+          [안정화] 버튼 클릭 시 st.toast() 즉시 피드백
+          [안정화] 점수 신뢰도 가이드 expander 추가
+  v11.4 - 점수 vs 차트 검증 UI 추가
+          _box_label() 판단 라벨 (🟢/🟡/🔴) 적용
+          TOP5 카드 판단 라벨 추가
+          테이블 위 검증 요약 통계 추가
+          차트 상단 점수+판단 표시 / 하단 체크리스트 expander 추가
   v11.3 - 종목 차트 교체 — 막대 차트 → 일봉 캔들스틱 (Plotly Candlestick)
           상단 봉차트 (상승=빨강/하락=파랑) + 하단 거래량 보조 차트
           get_price_chart() 거래량 컬럼 반환 추가
@@ -69,6 +85,9 @@ if "chunk_executing" not in st.session_state:
 if "ui_score_range" not in st.session_state:
     st.session_state["ui_score_range"] = (DEFAULT_SCORE_MIN, DEFAULT_SCORE_MAX)
 
+if "validation_log" not in st.session_state:
+    st.session_state["validation_log"] = []
+
 # pykrx (종목명 조회 / 빠른 스캔 거래량 상위)
 try:
     from pykrx import stock as krx_stock
@@ -87,9 +106,9 @@ def calc_suggested_threshold(current, ratio):
     return current, None
 
 
-def get_price_chart(ticker_code):
+def get_price_chart(ticker_code, days=120):
     end = _get_date(1)
-    start = _get_date(120)
+    start = _get_date(days)
     if _KRX_AVAILABLE:
         try:
             df = krx_stock.get_market_ohlcv_by_date(start, end, ticker_code)
@@ -160,6 +179,25 @@ def _render_price_flow_chart(chart_df):
         row=1, col=1,
     )
 
+    # 이동평균선 20 / 60일
+    ma_styles = [
+        (20,  "#a78bfa", "MA20"),   # 보라
+        (60,  "#34d399", "MA60"),   # 초록
+    ]
+    for period, color, label in ma_styles:
+        ma = df["종가"].rolling(period, min_periods=1).mean()
+        fig.add_trace(
+            go.Scatter(
+                x=df.index,
+                y=ma,
+                mode="lines",
+                line=dict(color=color, width=1.2),
+                name=label,
+                opacity=0.85,
+            ),
+            row=1, col=1,
+        )
+
     # 하단 — 거래량
     if has_volume:
         is_up = df["종가"] >= df["시가"]
@@ -176,9 +214,17 @@ def _render_price_flow_chart(chart_df):
         )
 
     fig.update_layout(
-        height=420,
+        height=460,
         margin=dict(l=8, r=8, t=8, b=8),
-        showlegend=False,
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.01,
+            xanchor="left",
+            x=0,
+            font=dict(size=11),
+        ),
         xaxis_rangeslider_visible=False,
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
@@ -243,6 +289,14 @@ def _score_range_label(score_min, score_max):
     return f"{score_min}~{score_max}점"
 
 
+def _save_validation(ticker_code, ticker_name, score, judgment):
+    """validation_log에 판단 저장 — 동일 종목 재클릭 시 overwrite"""
+    log = st.session_state.get("validation_log", [])
+    log = [v for v in log if v["종목코드"] != ticker_code]
+    log.append({"종목코드": ticker_code, "종목명": ticker_name, "점수": score, "판단": judgment})
+    st.session_state["validation_log"] = log
+
+
 def _get_display_score_range():
     ui_range = st.session_state.get("ui_score_range")
     if isinstance(ui_range, (list, tuple)) and len(ui_range) == 2:
@@ -302,7 +356,7 @@ def _clear_partial_state():
     st.session_state.pop("result", None)
 
 
-def _run_full_scan(scan_market, score_min, score_max=None, resume=False):
+def _run_full_scan(scan_market, score_min, score_max=None, resume=False, days=120):
     """전체 스캔 실행/재개 공통 루틴"""
     if not resume:
         if score_max is None:
@@ -444,7 +498,7 @@ def _run_full_scan(scan_market, score_min, score_max=None, resume=False):
             f"{len(current_chunk)}개 종목 | 범위 {_score_range_label(score_min, score_max)}"
         )
 
-    start = _get_date(120)
+    start = _get_date(days)
     end = _get_date(1)
     try:
         with st.spinner("가격 데이터 소스 확인 중..."):
@@ -621,6 +675,14 @@ scan_mode = st.sidebar.radio(
 )
 is_full_scan = scan_mode.startswith("🔍")
 
+analysis_days = st.sidebar.radio(
+    "분석 기간",
+    [90, 120],
+    index=1,
+    format_func=lambda x: f"{x}일",
+    horizontal=True,
+)
+
 if is_full_scan:
     market_label = {"KOSPI": "코스피", "KOSDAQ": "코스닥", "ALL": "전체(KOSPI+KOSDAQ)"}.get(
         market_choice, market_choice
@@ -684,9 +746,10 @@ if show_resume_ui:
 # ── 스캔 버튼 ──────────────────────────────────────────────────
 btn_label = f"🔍 {market_choice} 전체 스캔 시작" if is_full_scan else f"⚡ {market_choice} 빠른 스캔 시작"
 if st.button(btn_label, use_container_width=True):
+    st.session_state["scan_days"] = analysis_days
     if is_full_scan:
         st.session_state["chunk_executing"] = True
-        _run_full_scan(scan_market=market_choice, score_min=score_min, score_max=score_max, resume=False)
+        _run_full_scan(scan_market=market_choice, score_min=score_min, score_max=score_max, resume=False, days=analysis_days)
     else:
         with st.spinner("분석 중..."):
             try:
@@ -726,7 +789,7 @@ if st.button(btn_label, use_container_width=True):
                     except Exception:
                         pass
 
-                start = _get_date(120)
+                start = _get_date(analysis_days)
                 end = _get_date(1)
                 price_info = get_price_source_for_scan(tickers, start, end)
 
@@ -792,6 +855,7 @@ if st.session_state.get("trigger_resume"):
         score_min=st.session_state.get("scan_score_min", DEFAULT_FULL_THRESHOLD),
         score_max=st.session_state.get("scan_score_max", DEFAULT_SCORE_MAX),
         resume=True,
+        days=st.session_state.get("scan_days", 120),
     )
 
 if (
@@ -806,6 +870,7 @@ if (
         score_min=st.session_state.get("scan_score_min", DEFAULT_FULL_THRESHOLD),
         score_max=st.session_state.get("scan_score_max", DEFAULT_SCORE_MAX),
         resume=True,
+        days=st.session_state.get("scan_days", 120),
     )
 
 # ── 결과 표시 ──────────────────────────────────────────────────
@@ -885,6 +950,15 @@ if display_df is not None:
 
         df = df.sort_values(by=["점수", "거래량"], ascending=[False, False]).reset_index(drop=True)
 
+        # ── 판단 라벨 함수 ──────────────────────────────────────
+        def _box_label(score):
+            if score >= 80:
+                return "🟢 박스권 가능성 높음"
+            elif score >= 70:
+                return "🟡 애매 구간"
+            else:
+                return "🔴 박스권 아님"
+
         top_n_cards = min(len(df), 5)
         top_df = df.head(top_n_cards)
         st.subheader("🏆 지금 봐야 할 종목 TOP 5")
@@ -912,10 +986,23 @@ if display_df is not None:
                             emoji = "🟡"
 
                         st.metric(label="점수", value=f"{score}점 {emoji}")
+                        st.caption(_box_label(score))
                         st.write(f"{row['돌파신호']}")
                         st.write(f"🧠 {row['이유']}")
 
         st.divider()
+
+        # ── 검증 요약 통계 ──────────────────────────────────────
+        cnt_high = len(df[df["점수"] >= 80])
+        cnt_mid  = len(df[(df["점수"] >= 70) & (df["점수"] < 80)])
+        cnt_low  = len(df[df["점수"] < 70])
+        st.markdown(
+            f"🧪 **검증 요약** &nbsp;|&nbsp; "
+            f"🟢 80점 이상: **{cnt_high}개** &nbsp; "
+            f"🟡 70~79점: **{cnt_mid}개** &nbsp; "
+            f"🔴 70점 미만: **{cnt_low}개**"
+        )
+
         st.subheader("박스권 후보")
         if mode == "full":
             st.caption(f"{score_range_label} 범위 | 높을수록 박스권 가능성 높음 (100점 최고) | 시장: {market}")
@@ -930,12 +1017,136 @@ if display_df is not None:
         if selected_name != "선택하세요":
             ticker_code = df.loc[df["종목명"] == selected_name, "종목코드"].values[0]
             score = df.loc[df["종목명"] == selected_name, "점수"].values[0]
-            st.subheader(f"{selected_name} — 최근 120일 종가")
-            st.caption(f"박스권 점수: {score}점")
+
+            # ── 검증용 태그 ────────────────────────────────────
+            box_label = _box_label(score)
+            st.subheader(f"{selected_name} — 최근 {analysis_days}일 가격 흐름")
+            col_score, col_label = st.columns([1, 3])
+            with col_score:
+                st.metric(label="박스권 점수", value=f"{score}점")
+            with col_label:
+                st.markdown(f"**판단** &nbsp; {box_label}")
+                st.caption("[검증용] — 알고리즘 기준 임시 분류")
+
             with st.spinner("차트 불러오는 중..."):
-                chart_df = get_price_chart(ticker_code)
+                chart_df = get_price_chart(ticker_code, days=analysis_days)
             if chart_df is None or chart_df.empty:
                 st.warning("차트 데이터를 불러올 수 없습니다.")
             else:
                 st.caption("빨강=상승 / 파랑=하락 | 일봉 기준")
                 _render_price_flow_chart(chart_df)
+
+                # ── 사용자 체크 유도 문구 ──────────────────────
+                with st.expander("🔍 이 종목이 실제로 박스권처럼 보이나요? (검증 체크리스트)"):
+                    st.markdown("""
+- 📊 **횡보 구간인가?** — 일정 기간 동안 방향 없이 횡보하는가?
+- 📐 **위/아래 변동이 제한되어 있는가?** — 고가/저가가 일정 범위 안에 갇혀있는가?
+- 🔒 **추세 없이 갇혀 있는 느낌인가?** — MA20/MA60이 수평에 가까운가?
+
+👉 위 3개가 모두 **Yes** → 점수와 일치 ✅  
+👉 하나라도 **No** → 점수와 불일치 ⚠️ (엔진 재검토 필요)
+""")
+
+                # ── 사용자 판단 버튼 ────────────────────────────
+                st.markdown("**📝 이 종목 판단 기록**")
+
+                # 현재 기록 → 버튼 위로 이동
+                existing = next(
+                    (v for v in st.session_state["validation_log"] if v["종목코드"] == ticker_code),
+                    None
+                )
+                if existing:
+                    judge_emoji = {"맞음": "👍", "애매": "🤔", "아님": "👎"}.get(existing["판단"], "")
+                    st.info(f"현재 기록: {judge_emoji} **{existing['판단']}** (점수 {existing['점수']}점) — 아래 버튼으로 수정 가능")
+                else:
+                    st.caption("아직 판단 기록 없음 — 아래에서 선택하세요")
+
+                btn_col1, btn_col2, btn_col3 = st.columns(3)
+                with btn_col1:
+                    if st.button("👍 박스권 맞음", key=f"val_yes_{ticker_code}", use_container_width=True):
+                        _save_validation(ticker_code, selected_name, score, "맞음")
+                        st.toast("✅ 맞음으로 기록됐어요", icon="👍")
+                with btn_col2:
+                    if st.button("🤔 애매함", key=f"val_mid_{ticker_code}", use_container_width=True):
+                        _save_validation(ticker_code, selected_name, score, "애매")
+                        st.toast("🤔 애매함으로 기록됐어요", icon="🤔")
+                with btn_col3:
+                    if st.button("👎 아님", key=f"val_no_{ticker_code}", use_container_width=True):
+                        _save_validation(ticker_code, selected_name, score, "아님")
+                        st.toast("❌ 아님으로 기록됐어요", icon="👎")
+
+# ── 검증 통계 & 다운로드 ───────────────────────────────────────
+vlog = st.session_state.get("validation_log", [])
+if vlog:
+    st.divider()
+    st.subheader("📊 검증 결과")
+
+    # 샘플 수 경고 + 로그 개수
+    vlog_count = len(vlog)
+    st.caption(f"총 검증 데이터: {vlog_count}개")
+    if vlog_count < 20:
+        st.warning(f"⚠️ 검증 데이터가 부족합니다 ({vlog_count}개 / 최소 20개 필요) — 더 많은 종목을 판단해주세요")
+
+    vdf = pd.DataFrame(vlog)
+
+    def _vstat(df, min_s, max_s):
+        sub = df[(df["점수"] >= min_s) & (df["점수"] < max_s)]
+        if sub.empty:
+            return {"맞음": 0, "애매": 0, "아님": 0, "합계": 0}
+        counts = sub["판단"].value_counts().to_dict()
+        return {
+            "맞음": counts.get("맞음", 0),
+            "애매": counts.get("애매", 0),
+            "아님": counts.get("아님", 0),
+            "합계": len(sub),
+        }
+
+    stat_high = _vstat(vdf, 80, 101)
+    stat_mid  = _vstat(vdf, 70, 80)
+    stat_low  = _vstat(vdf, 0,  70)
+
+    col_h, col_m, col_l = st.columns(3)
+    with col_h:
+        st.markdown("**🟢 80점 이상**")
+        st.markdown(f"- 맞음: **{stat_high['맞음']}**")
+        st.markdown(f"- 애매: **{stat_high['애매']}**")
+        st.markdown(f"- 아님: **{stat_high['아님']}**")
+        st.caption(f"합계 {stat_high['합계']}개")
+    with col_m:
+        st.markdown("**🟡 70~79점**")
+        st.markdown(f"- 맞음: **{stat_mid['맞음']}**")
+        st.markdown(f"- 애매: **{stat_mid['애매']}**")
+        st.markdown(f"- 아님: **{stat_mid['아님']}**")
+        st.caption(f"합계 {stat_mid['합계']}개")
+    with col_l:
+        st.markdown("**🔴 70점 미만**")
+        st.markdown(f"- 맞음: **{stat_low['맞음']}**")
+        st.markdown(f"- 애매: **{stat_low['애매']}**")
+        st.markdown(f"- 아님: **{stat_low['아님']}**")
+        st.caption(f"합계 {stat_low['합계']}개")
+
+    # 신뢰도 가이드
+    with st.expander("📌 점수 신뢰도 판단 기준"):
+        st.markdown("""
+- 🟢 **80점 이상** → 맞음 비율 **70% 이상**이면 엔진 정상
+- 🟡 **70~79점** → 애매 비율이 높아야 정상 (경계 구간)
+- 🔴 **70점 미만** → 아님 비율이 높아야 정상 (걸러지는 구간)
+
+👉 패턴이 위와 다르면 → **v11.6 점수 튜닝 필요**
+""")
+
+    st.divider()
+    dl_col, clear_col = st.columns([3, 1])
+    with dl_col:
+        csv_data = vdf.to_csv(index=False, encoding="utf-8-sig")
+        st.download_button(
+            label="📥 검증 데이터 다운로드 (CSV)",
+            data=csv_data,
+            file_name="validation_log.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+    with clear_col:
+        if st.button("🧹 검증 초기화", use_container_width=True):
+            st.session_state["validation_log"] = []
+            st.rerun()
