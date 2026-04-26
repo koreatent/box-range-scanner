@@ -1,11 +1,21 @@
-[README.md](https://github.com/user-attachments/files/27100790/README.md)
-
+[README.md](https://github.com/user-attachments/files/27100828/README.md)
 # 박스권 스캐너 컨트롤룸
 
 한국 주식시장(KOSPI / KOSDAQ)에서 박스권 종목을 자동 탐지하는 스캐너.  
 점수 기반 필터링 → 캔들 차트 확인 → 사용자 검증 기록까지 한 화면에서 처리.
 
 🔗 **배포 주소**: https://appapppy-arrvupjezplekjddatmdmg.streamlit.app
+
+---
+
+> ⚠️ **면책 조항 (Disclaimer)**
+>
+> 본 스캐너는 **참고용 도구**입니다.
+> 제공되는 점수 및 신호는 알고리즘 기반 분석 결과이며,
+> **투자 권유 또는 매매 추천이 아닙니다.**
+>
+> 모든 투자 판단과 그에 따른 손익 책임은 **전적으로 투자자 본인**에게 있습니다.
+> 본 도구의 사용으로 발생한 손실에 대해 개발팀은 어떠한 책임도 지지 않습니다.
 
 ---
 
