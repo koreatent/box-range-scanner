@@ -1,4 +1,5 @@
-[README.md](https://github.com/user-attachments/files/27100828/README.md)
+[README.md](https://github.com/user-attachments/files/27125108/README.md)
+
 # 박스권 스캐너 컨트롤룸
 
 한국 주식시장(KOSPI / KOSDAQ)에서 박스권 종목을 자동 탐지하는 스캐너.  
@@ -214,6 +215,7 @@ streamlit run streamlit_app.py
 |------|------|------|
 | 경고 배지 표시 | 캐시 데이터 사용 중 | 평일 장 마감 후 재실행 |
 | 위기(빨강) 배지 표시 | 모든 소스 실패 → fallback | 잠시 후 재시도 |
+| 종목명 "Empty DataFrame" | pykrx가 DataFrame 반환 | box_range_scanner.py v10.0 최신본으로 업데이트 |
 | `too many values to unpack` | 구버전 box_range_scanner.py | v10.0으로 업데이트 |
 | `ModuleNotFoundError` | 패키지 미설치 | `pip install -r requirements.txt` |
 | 결과 없음 | 점수 범위가 너무 좁음 | 사이드바 슬라이더 조정 |
@@ -225,6 +227,7 @@ streamlit run streamlit_app.py
 | 버전 | 주요 변경 |
 |------|-----------|
 | **v11.5** | 점수 신뢰도 검증 데이터 수집 — 판단 버튼(👍🤔👎), 구간별 통계, CSV 다운로드, 안정화 가드레일 (샘플 경고 / toast 피드백 / 신뢰도 가이드) |
+| | [버그픽스] 종목명 "Empty DataFrame" 깨짐 수정 — _get_ticker_name() DataFrame/Series 반환 방어, df["종목명"] astype(str) 보장 |
 | **v11.4** | 점수 vs 차트 검증 UI — _box_label() 판단 라벨, TOP5 카드 라벨, 검증 요약 통계, 체크리스트 expander |
 | **v11.3** | 차트 캔들스틱 전환 — 일봉 캔들(상승=빨강/하락=파랑) + 거래량 보조차트, MA20/MA60 이평선 추가 |
 | **v11.2** | 점수 필터 범위 슬라이더 — 단일 threshold → min~max 범위 선택, score_max 화면 필터링 |
