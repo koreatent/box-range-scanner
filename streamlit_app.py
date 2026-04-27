@@ -950,6 +950,10 @@ if display_df is not None:
 
         df = df.sort_values(by=["점수", "거래량"], ascending=[False, False]).reset_index(drop=True)
 
+        # 종목명 str 보장
+        if "종목명" in df.columns:
+            df["종목명"] = df["종목명"].astype(str)
+
         # ── 판단 라벨 함수 ──────────────────────────────────────
         def _box_label(score):
             if score >= 80:

@@ -303,9 +303,27 @@ def get_breakout_signal(df):
 def _get_ticker_name(ticker):
     if _KRX_AVAILABLE:
         try:
-            return krx_stock.get_market_ticker_name(ticker)
+            name = krx_stock.get_market_ticker_name(ticker)
+
+            # DataFrame 처리
+            if isinstance(name, pd.DataFrame):
+                if not name.empty:
+                    return str(name.iloc[0, 0]).strip()
+                return ticker
+
+            # Series 처리
+            if isinstance(name, pd.Series):
+                if not name.empty:
+                    return str(name.iloc[0]).strip()
+                return ticker
+
+            # 일반 문자열 처리
+            name = str(name).strip()
+            return name if name else ticker
+
         except Exception:
-            pass
+            return ticker
+
     return ticker
 
 
