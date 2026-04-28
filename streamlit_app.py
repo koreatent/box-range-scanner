@@ -47,6 +47,10 @@ streamlit_app.py — v11.5
   v8.3 - threshold 슬라이더, 튜닝 권고 배너
 """
 
+import json
+from datetime import datetime
+from pathlib import Path
+
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -56,10 +60,16 @@ from box_range_scanner import (
     FALLBACK_KOSDAQ,
     FALLBACK_KOSPI,
     _get_date,
-    get_market_tickers,
     get_price_source_for_scan,
     run_scan,
 )
+
+try:
+    import FinanceDataReader as fdr
+
+    _FDR_AVAILABLE = True
+except ImportError:
+    _FDR_AVAILABLE = False
 
 # ── 상수 ──────────────────────────────────────────────────────
 FAST_SCORE_THRESHOLD = 0
@@ -97,6 +107,144 @@ except ImportError:
     _KRX_AVAILABLE = False
 
 
+TICKER_CACHE_PATH = Path(__file__).with_name("ticker_cache.json")
+
+
+def _normalize_tickers(tickers):
+    normalized = []
+    seen = set()
+    for ticker in tickers or []:
+        code = str(ticker).strip().zfill(6)
+        if code and code not in seen:
+            seen.add(code)
+            normalized.append(code)
+    normalized.sort()
+    return normalized
+
+
+def _ticker_fallback_for_market(market):
+    return FALLBACK_KOSPI if market == "KOSPI" else FALLBACK_KOSDAQ
+
+
+def _ticker_cache_read():
+    if not TICKER_CACHE_PATH.exists():
+        return {}
+    with TICKER_CACHE_PATH.open("r", encoding="utf-8") as fp:
+        data = json.load(fp)
+    return data if isinstance(data, dict) else {}
+
+
+def _ticker_cache_write(data):
+    with TICKER_CACHE_PATH.open("w", encoding="utf-8") as fp:
+        json.dump(data, fp, ensure_ascii=False, indent=2)
+
+
+def save_ticker_cache(market, tickers, source):
+    tickers = _normalize_tickers(tickers)
+    if market not in {"KOSPI", "KOSDAQ"} or not tickers:
+        return
+    try:
+        cache = _ticker_cache_read()
+    except Exception:
+        cache = {}
+    cache[market] = {
+        "source": source,
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "tickers": tickers,
+    }
+    _ticker_cache_write(cache)
+
+
+def load_ticker_cache(market):
+    cache = _ticker_cache_read()
+    entry = cache.get(market, {})
+    tickers = _normalize_tickers(entry.get("tickers"))
+    if not tickers:
+        raise ValueError(f"empty ticker cache for {market}")
+    return tickers, entry.get("updated_at")
+
+
+def _is_limited_ticker_mode(market, source, ticker_count):
+    source = source or ""
+    if source == "FALLBACK":
+        return True
+    if "FALLBACK" not in source:
+        return False
+    if market == "ALL":
+        return ticker_count < 800
+    return ticker_count < 200
+
+
+def get_tickers_with_fallback(market):
+    logs = []
+    market_up = market.upper()
+
+    if market_up == "ALL":
+        kospi = get_tickers_with_fallback("KOSPI")
+        kosdaq = get_tickers_with_fallback("KOSDAQ")
+        tickers = _normalize_tickers(kospi["tickers"] + kosdaq["tickers"])
+        sources = []
+        for source in [kospi["source"], kosdaq["source"]]:
+            if source not in sources:
+                sources.append(source)
+        source = "+".join(sources) if len(sources) > 1 else sources[0]
+        cache_dates = [d for d in [kospi.get("cache_date"), kosdaq.get("cache_date")] if d]
+        logs.extend(kospi["log"])
+        logs.extend(kosdaq["log"])
+        logs.append(f"[INFO] ALL ticker merge complete: {len(tickers)} tickers")
+        return {
+            "tickers": tickers,
+            "source": source,
+            "cache_date": max(cache_dates) if cache_dates else None,
+            "log": logs,
+        }
+
+    if _FDR_AVAILABLE:
+        try:
+            df = fdr.StockListing(market_up)
+            if df is not None and not df.empty:
+                code_col = next((c for c in ["Code", "Symbol", "종목코드"] if c in df.columns), None)
+                if code_col:
+                    tickers = _normalize_tickers(df[code_col].tolist())
+                    if tickers:
+                        save_ticker_cache(market_up, tickers, source="FDR")
+                        logs.append(f"[INFO] ticker source FDR-{market_up}: {len(tickers)} tickers")
+                        return {"tickers": tickers, "source": "FDR", "cache_date": None, "log": logs}
+                logs.append(f"[WARN] FDR StockListing({market_up}) returned no code column")
+        except Exception as e:
+            logs.append(f"[WARN] FDR StockListing({market_up}) failed: {e}")
+    else:
+        logs.append("[WARN] FinanceDataReader is not available")
+
+    if _KRX_AVAILABLE:
+        try:
+            tickers = _normalize_tickers(krx_stock.get_market_ticker_list(market=market_up))
+            if tickers:
+                save_ticker_cache(market_up, tickers, source="PYKRX")
+                logs.append(f"[INFO] ticker source PYKRX-{market_up}: {len(tickers)} tickers")
+                return {"tickers": tickers, "source": "PYKRX", "cache_date": None, "log": logs}
+            logs.append(f"[WARN] pykrx get_market_ticker_list({market_up}) returned empty list")
+        except Exception as e:
+            logs.append(f"[WARN] pykrx get_market_ticker_list({market_up}) failed: {e}")
+    else:
+        logs.append("[WARN] pykrx is not available")
+
+    try:
+        tickers, cache_date = load_ticker_cache(market_up)
+        logs.append(f"[WARN] ticker cache used for {market_up}: {cache_date} ({len(tickers)} tickers)")
+        return {"tickers": tickers, "source": "CACHE", "cache_date": cache_date, "log": logs}
+    except Exception as e:
+        logs.append(f"[WARN] ticker cache failed for {market_up}: {e}")
+
+    tickers = _normalize_tickers(_ticker_fallback_for_market(market_up))
+    logs.append(f"[ERROR] ticker fallback used for {market_up}: {len(tickers)} tickers")
+    return {"tickers": tickers, "source": "FALLBACK", "cache_date": None, "log": logs}
+
+
+def get_market_tickers(market="KOSPI"):
+    return get_tickers_with_fallback(market)
+
+
 # ── 유틸 ──────────────────────────────────────────────────────
 def calc_suggested_threshold(current, ratio):
     if ratio > RATIO_HIGH:
@@ -121,9 +269,11 @@ def get_price_chart(ticker_code, days=120):
 
 
 def _source_status(ticker_src, price_src, is_fallback, cache_date):
+    ticker_src = ticker_src or ""
+    price_src = price_src or ""
     if is_fallback or ticker_src == "FALLBACK":
         return "위기"
-    if "CACHE" in (ticker_src, price_src) or cache_date:
+    if "CACHE" in ticker_src or "CACHE" in price_src or cache_date:
         return "경고"
     return "정상"
 
@@ -141,11 +291,11 @@ def _render_badge_row(market, ticker_src, price_src, mode_label, cache_date, sta
         col.markdown(f"**{label}**  \n`{val}`")
 
     if status == "정상":
-        st.success("✅ 정상 수집 — FDR 기반 실시간 데이터")
+        st.success("✅ 정상 수집 — FDR/PYKRX 기반 ticker 목록으로 스캔 중")
     elif status == "경고":
-        st.warning(f"⚠️ 캐시 데이터 사용 중 — [{cache_date}] 기준 최근 성공 데이터로 스캔되었습니다")
+        st.warning(f"⚠️ 캐시 모드 — [{cache_date}] 기준 최근 성공 ticker 목록을 사용 중")
     else:
-        st.error("🚨 제한 모드 — 현재 데이터가 제한적입니다. fallback 종목 기준으로 스캔 중")
+        st.error("🚨 제한 모드 — cache까지 실패해 최종 fallback 종목 기준으로 스캔 중")
 
 
 def _render_price_flow_chart(chart_df):
@@ -369,7 +519,7 @@ def _run_full_scan(scan_market, score_min, score_max=None, resume=False, days=12
         ticker_src = ticker_result["source"]
         ticker_logs = ticker_result["log"]
         ticker_cache_date = ticker_result.get("cache_date")
-        is_fallback = ticker_src == "FALLBACK"
+        is_fallback = _is_limited_ticker_mode(scan_market, ticker_src, len(tickers))
 
         for log in ticker_logs:
             if log.startswith("[INFO]"):
