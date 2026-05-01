@@ -47,7 +47,6 @@ streamlit_app.py — v11.5
   v8.3 - threshold 슬라이더, 튜닝 권고 배너
 """
 
-import json
 from datetime import datetime
 from pathlib import Path
 
@@ -107,7 +106,7 @@ except ImportError:
     _KRX_AVAILABLE = False
 
 
-TICKER_CACHE_PATH = Path(__file__).with_name("ticker_cache.json")
+TICKER_CACHE_PATH = Path(__file__).with_name("ticker_cache.csv")
 
 
 def _normalize_tickers(tickers):
@@ -126,42 +125,91 @@ def _ticker_fallback_for_market(market):
     return FALLBACK_KOSPI if market == "KOSPI" else FALLBACK_KOSDAQ
 
 
-def _ticker_cache_read():
-    if not TICKER_CACHE_PATH.exists():
-        return {}
-    with TICKER_CACHE_PATH.open("r", encoding="utf-8") as fp:
-        data = json.load(fp)
-    return data if isinstance(data, dict) else {}
-
-
-def _ticker_cache_write(data):
-    with TICKER_CACHE_PATH.open("w", encoding="utf-8") as fp:
-        json.dump(data, fp, ensure_ascii=False, indent=2)
-
-
-def save_ticker_cache(market, tickers, source):
+def _ticker_df_from_codes(tickers, market, names=None):
     tickers = _normalize_tickers(tickers)
-    if market not in {"KOSPI", "KOSDAQ"} or not tickers:
-        return
-    try:
-        cache = _ticker_cache_read()
-    except Exception:
-        cache = {}
-    cache[market] = {
-        "source": source,
-        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "tickers": tickers,
+    names = names or {}
+    return pd.DataFrame(
+        {
+            "종목코드": tickers,
+            "종목명": [names.get(ticker, ticker) for ticker in tickers],
+            "시장": market,
+        }
+    )
+
+
+def _normalize_ticker_df(df, market=None):
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["종목코드", "종목명", "시장"])
+
+    out = df.copy()
+    rename_map = {
+        "Code": "종목코드",
+        "Symbol": "종목코드",
+        "Name": "종목명",
+        "Market": "시장",
     }
-    _ticker_cache_write(cache)
+    out = out.rename(columns={k: v for k, v in rename_map.items() if k in out.columns})
+    if "종목코드" not in out.columns:
+        raise ValueError("ticker dataframe has no code column")
+    if "종목명" not in out.columns:
+        out["종목명"] = out["종목코드"].astype(str)
+    if "시장" not in out.columns:
+        out["시장"] = market or "ALL"
+
+    out = out[["종목코드", "종목명", "시장"]].copy()
+    out["종목코드"] = out["종목코드"].astype(str).str.strip().str.zfill(6)
+    out["종목명"] = out["종목명"].astype(str)
+    out["시장"] = out["시장"].astype(str).str.upper()
+    out = out[out["종목코드"].str.len() == 6]
+    out = out.drop_duplicates("종목코드").sort_values("종목코드").reset_index(drop=True)
+    return out
+
+
+def save_ticker_cache(ticker_df, source):
+    if ticker_df is None or ticker_df.empty:
+        return
+    out = _normalize_ticker_df(ticker_df)
+    out["source"] = source
+    out["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    if TICKER_CACHE_PATH.exists():
+        try:
+            existing_raw = pd.read_csv(TICKER_CACHE_PATH, dtype={"종목코드": str})
+            existing = _normalize_ticker_df(existing_raw)
+            for col in ["source", "updated_at"]:
+                if col in existing_raw.columns:
+                    meta = existing_raw[["종목코드", col]].copy()
+                    meta["종목코드"] = meta["종목코드"].astype(str).str.strip().str.zfill(6)
+                    meta = meta.drop_duplicates("종목코드")
+                    existing = existing.merge(meta, on="종목코드", how="left")
+        except Exception:
+            existing = pd.DataFrame(columns=["종목코드", "종목명", "시장"])
+    else:
+        existing = pd.DataFrame(columns=["종목코드", "종목명", "시장"])
+
+    markets = set(out["시장"].str.upper().tolist())
+    existing = existing[~existing["시장"].str.upper().isin(markets)].copy()
+    merged = pd.concat([existing, out], ignore_index=True)
+    merged = merged.drop_duplicates("종목코드").sort_values(["시장", "종목코드"]).reset_index(drop=True)
+    merged.to_csv(TICKER_CACHE_PATH, index=False, encoding="utf-8-sig")
 
 
 def load_ticker_cache(market):
-    cache = _ticker_cache_read()
-    entry = cache.get(market, {})
-    tickers = _normalize_tickers(entry.get("tickers"))
-    if not tickers:
-        raise ValueError(f"empty ticker cache for {market}")
-    return tickers, entry.get("updated_at")
+    if not TICKER_CACHE_PATH.exists():
+        raise FileNotFoundError(str(TICKER_CACHE_PATH))
+
+    df = pd.read_csv(TICKER_CACHE_PATH, dtype={"종목코드": str})
+    df = _normalize_ticker_df(df)
+    market_up = market.upper()
+    if market_up in {"KOSPI", "KOSDAQ"} and "시장" in df.columns:
+        df = df[df["시장"].str.upper() == market_up].copy()
+    if df.empty:
+        raise ValueError(f"empty ticker cache for {market_up}")
+    cache_date = None
+    raw = pd.read_csv(TICKER_CACHE_PATH, dtype={"종목코드": str})
+    if "updated_at" in raw.columns and not raw["updated_at"].dropna().empty:
+        cache_date = str(raw["updated_at"].dropna().iloc[-1])
+    return df.reset_index(drop=True), cache_date
 
 
 def _is_limited_ticker_mode(market, source, ticker_count):
@@ -175,42 +223,35 @@ def _is_limited_ticker_mode(market, source, ticker_count):
     return ticker_count < 200
 
 
-def get_tickers_with_fallback(market):
+def get_ticker_list(market="ALL"):
     logs = []
     market_up = market.upper()
 
     if market_up == "ALL":
-        kospi = get_tickers_with_fallback("KOSPI")
-        kosdaq = get_tickers_with_fallback("KOSDAQ")
-        tickers = _normalize_tickers(kospi["tickers"] + kosdaq["tickers"])
+        kospi_df, kospi_source, kospi_logs, kospi_cache_date = get_ticker_list("KOSPI")
+        kosdaq_df, kosdaq_source, kosdaq_logs, kosdaq_cache_date = get_ticker_list("KOSDAQ")
+        df = pd.concat([kospi_df, kosdaq_df], ignore_index=True)
+        df = _normalize_ticker_df(df)
         sources = []
-        for source in [kospi["source"], kosdaq["source"]]:
+        for source in [kospi_source, kosdaq_source]:
             if source not in sources:
                 sources.append(source)
         source = "+".join(sources) if len(sources) > 1 else sources[0]
-        cache_dates = [d for d in [kospi.get("cache_date"), kosdaq.get("cache_date")] if d]
-        logs.extend(kospi["log"])
-        logs.extend(kosdaq["log"])
-        logs.append(f"[INFO] ALL ticker merge complete: {len(tickers)} tickers")
-        return {
-            "tickers": tickers,
-            "source": source,
-            "cache_date": max(cache_dates) if cache_dates else None,
-            "log": logs,
-        }
+        cache_dates = [d for d in [kospi_cache_date, kosdaq_cache_date] if d]
+        logs.extend(kospi_logs)
+        logs.extend(kosdaq_logs)
+        logs.append(f"[INFO] ALL ticker merge complete: {len(df)} tickers")
+        return df, source, logs, max(cache_dates) if cache_dates else None
 
     if _FDR_AVAILABLE:
         try:
             df = fdr.StockListing(market_up)
-            if df is not None and not df.empty:
-                code_col = next((c for c in ["Code", "Symbol", "종목코드"] if c in df.columns), None)
-                if code_col:
-                    tickers = _normalize_tickers(df[code_col].tolist())
-                    if tickers:
-                        save_ticker_cache(market_up, tickers, source="FDR")
-                        logs.append(f"[INFO] ticker source FDR-{market_up}: {len(tickers)} tickers")
-                        return {"tickers": tickers, "source": "FDR", "cache_date": None, "log": logs}
-                logs.append(f"[WARN] FDR StockListing({market_up}) returned no code column")
+            df = _normalize_ticker_df(df, market=market_up)
+            if not df.empty:
+                save_ticker_cache(df, source="FDR")
+                logs.append(f"[INFO] ticker source FDR-{market_up}: {len(df)} tickers")
+                return df, "FDR", logs, None
+            logs.append(f"[WARN] FDR StockListing({market_up}) returned empty list")
         except Exception as e:
             logs.append(f"[WARN] FDR StockListing({market_up}) failed: {e}")
     else:
@@ -220,9 +261,11 @@ def get_tickers_with_fallback(market):
         try:
             tickers = _normalize_tickers(krx_stock.get_market_ticker_list(market=market_up))
             if tickers:
-                save_ticker_cache(market_up, tickers, source="PYKRX")
-                logs.append(f"[INFO] ticker source PYKRX-{market_up}: {len(tickers)} tickers")
-                return {"tickers": tickers, "source": "PYKRX", "cache_date": None, "log": logs}
+                names = {ticker: krx_stock.get_market_ticker_name(ticker) for ticker in tickers}
+                df = _ticker_df_from_codes(tickers, market_up, names)
+                save_ticker_cache(df, source="PYKRX")
+                logs.append(f"[INFO] ticker source PYKRX-{market_up}: {len(df)} tickers")
+                return df, "PYKRX", logs, None
             logs.append(f"[WARN] pykrx get_market_ticker_list({market_up}) returned empty list")
         except Exception as e:
             logs.append(f"[WARN] pykrx get_market_ticker_list({market_up}) failed: {e}")
@@ -230,19 +273,26 @@ def get_tickers_with_fallback(market):
         logs.append("[WARN] pykrx is not available")
 
     try:
-        tickers, cache_date = load_ticker_cache(market_up)
-        logs.append(f"[WARN] ticker cache used for {market_up}: {cache_date} ({len(tickers)} tickers)")
-        return {"tickers": tickers, "source": "CACHE", "cache_date": cache_date, "log": logs}
+        df, cache_date = load_ticker_cache(market_up)
+        logs.append(f"[WARN] ticker cache used for {market_up}: {cache_date} ({len(df)} tickers)")
+        return df, "CACHE", logs, cache_date
     except Exception as e:
         logs.append(f"[WARN] ticker cache failed for {market_up}: {e}")
 
     tickers = _normalize_tickers(_ticker_fallback_for_market(market_up))
-    logs.append(f"[ERROR] ticker fallback used for {market_up}: {len(tickers)} tickers")
-    return {"tickers": tickers, "source": "FALLBACK", "cache_date": None, "log": logs}
+    df = _ticker_df_from_codes(tickers, market_up)
+    logs.append(f"[ERROR] ticker fallback used for {market_up}: {len(df)} tickers")
+    return df, "FALLBACK", logs, None
 
 
 def get_market_tickers(market="KOSPI"):
-    return get_tickers_with_fallback(market)
+    ticker_df, ticker_source, logs, cache_date = get_ticker_list(market)
+    return {
+        "tickers": ticker_df["종목코드"].tolist(),
+        "source": ticker_source,
+        "cache_date": cache_date,
+        "log": logs,
+    }
 
 
 # ── 유틸 ──────────────────────────────────────────────────────
