@@ -1336,7 +1336,7 @@ if vlog:
     st.divider()
     dl_col, clear_col = st.columns([3, 1])
     with dl_col:
-        csv_data = vdf.to_csv(index=False, encoding="utf-8-sig")
+        csv_data = vdf.to_csv(index=False).encode("utf-8-sig")
         st.download_button(
             label="📥 검증 데이터 다운로드 (CSV)",
             data=csv_data,
