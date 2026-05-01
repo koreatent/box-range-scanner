@@ -489,11 +489,44 @@ def _score_range_label(score_min, score_max):
     return f"{score_min}~{score_max}점"
 
 
+def _current_scan_context():
+    return {
+        "시장": st.session_state.get("scan_market", "-"),
+        "analysis_days": int(st.session_state.get("scan_days", analysis_days)),
+        "score_min": int(st.session_state.get("scan_score_min", DEFAULT_FULL_THRESHOLD)),
+        "score_max": int(st.session_state.get("scan_score_max", DEFAULT_SCORE_MAX)),
+        "scan_date": st.session_state.get("scan_date", datetime.now().strftime("%Y-%m-%d")),
+    }
+
+
+def _validation_matches_context(item, context):
+    return (
+        str(item.get("시장", "")) == str(context["시장"])
+        and int(item.get("analysis_days", -1)) == context["analysis_days"]
+        and int(item.get("score_min", -1)) == context["score_min"]
+        and int(item.get("score_max", -1)) == context["score_max"]
+        and str(item.get("scan_date", "")) == str(context["scan_date"])
+    )
+
+
 def _save_validation(ticker_code, ticker_name, score, judgment):
-    """validation_log에 판단 저장 — 동일 종목 재클릭 시 overwrite"""
+    """validation_log에 판단 저장 — 동일 종목/스캔 조건 재클릭 시 overwrite"""
+    context = _current_scan_context()
     log = st.session_state.get("validation_log", [])
-    log = [v for v in log if v["종목코드"] != ticker_code]
-    log.append({"종목코드": ticker_code, "종목명": ticker_name, "점수": score, "판단": judgment})
+    ticker_code = str(ticker_code).strip().zfill(6)
+    log = [
+        v for v in log
+        if not (str(v.get("종목코드", "")).strip().zfill(6) == ticker_code and _validation_matches_context(v, context))
+    ]
+    log.append(
+        {
+            "종목코드": ticker_code,
+            "종목명": ticker_name,
+            "점수": score,
+            "판단": judgment,
+            **context,
+        }
+    )
     st.session_state["validation_log"] = log
 
 
@@ -600,6 +633,8 @@ def _run_full_scan(scan_market, score_min, score_max=None, resume=False, days=12
                 "scan_threshold_used": score_min,
                 "scan_score_min": score_min,
                 "scan_score_max": score_max,
+                "scan_days": days,
+                "scan_date": datetime.now().strftime("%Y-%m-%d"),
                 "scan_ticker_src": ticker_src,
                 "scan_ticker_cache_date": ticker_cache_date,
                 "scan_all_tickers": tickers,
@@ -941,6 +976,7 @@ if show_resume_ui:
 btn_label = f"🔍 {market_choice} 전체 스캔 시작" if is_full_scan else f"⚡ {market_choice} 빠른 스캔 시작"
 if st.button(btn_label, use_container_width=True):
     st.session_state["scan_days"] = analysis_days
+    st.session_state["scan_date"] = datetime.now().strftime("%Y-%m-%d")
     if is_full_scan:
         st.session_state["chunk_executing"] = True
         _run_full_scan(scan_market=market_choice, score_min=score_min, score_max=score_max, resume=False, days=analysis_days)
@@ -1012,6 +1048,8 @@ if st.button(btn_label, use_container_width=True):
                         "suggested_threshold": DEFAULT_FULL_THRESHOLD,
                         "scan_score_min": FAST_SCORE_THRESHOLD,
                         "scan_score_max": 100,
+                        "scan_days": analysis_days,
+                        "scan_date": st.session_state.get("scan_date", datetime.now().strftime("%Y-%m-%d")),
                         "partial_results": [],
                         "processed_tickers": [],
                         "scan_all_tickers": [],
@@ -1157,36 +1195,56 @@ if display_df is not None:
             else:
                 return "🔴 박스권 아님"
 
-        top_n_cards = min(len(df), 5)
-        top_df = df.head(top_n_cards)
+        current_context = _current_scan_context()
+        recent_rejected_codes = {
+            str(item.get("종목코드", "")).strip().zfill(6)
+            for item in st.session_state.get("validation_log", [])
+            if _validation_matches_context(item, current_context)
+            and item.get("판단") in {"아님", "박스권 아님", "👎"}
+        }
+        top_candidates = df.copy()
+        top_candidates["_recent_rejected"] = (
+            top_candidates["종목코드"].astype(str).str.strip().str.zfill(6).isin(recent_rejected_codes)
+        )
+        top_candidates = top_candidates.sort_values(
+            by=["_recent_rejected", "점수", "거래량"],
+            ascending=[True, False, False],
+        ).reset_index(drop=True)
+        top_n_cards = min(len(top_candidates), 5)
+        top_df = top_candidates.head(top_n_cards)
         st.subheader("🏆 지금 봐야 할 종목 TOP 5")
         if _is_partial:
             st.caption("⚠️ 부분 결과 기준 TOP 5")
         st.caption("점수 + 거래량 기준 — 즉시 판단용")
 
-        cols_per_row = 2 if top_n_cards >= 4 else top_n_cards
-        rows = [top_df[i : i + cols_per_row] for i in range(0, len(top_df), cols_per_row)]
+        if top_df.empty:
+            st.info("검증에서 제외한 종목을 빼면 표시할 TOP5 후보가 없습니다.")
+        else:
+            cols_per_row = 2 if top_n_cards >= 4 else top_n_cards
+            rows = [top_df[i : i + cols_per_row] for i in range(0, len(top_df), cols_per_row)]
 
-        for row_df in rows:
-            cols = st.columns(len(row_df))
-            for col, (_, row) in zip(cols, row_df.iterrows()):
-                with col:
-                    with st.container(border=True):
-                        st.markdown(f"**{row['종목명']}**")
-                        st.caption(f"`{row['종목코드']}`")
+            for row_df in rows:
+                cols = st.columns(len(row_df))
+                for col, (_, row) in zip(cols, row_df.iterrows()):
+                    with col:
+                        with st.container(border=True):
+                            st.markdown(f"**{row['종목명']}**")
+                            st.caption(f"`{row['종목코드']}`")
 
-                        score = row["점수"]
-                        if score >= 90:
-                            emoji = "🔥"
-                        elif score >= 80:
-                            emoji = "⚡"
-                        else:
-                            emoji = "🟡"
+                            score = row["점수"]
+                            if score >= 90:
+                                emoji = "🔥"
+                            elif score >= 80:
+                                emoji = "⚡"
+                            else:
+                                emoji = "🟡"
 
-                        st.metric(label="점수", value=f"{score}점 {emoji}")
-                        st.caption(_box_label(score))
-                        st.write(f"{row['돌파신호']}")
-                        st.write(f"🧠 {row['이유']}")
+                            st.metric(label="점수", value=f"{score}점 {emoji}")
+                            st.caption(_box_label(score))
+                            if row.get("_recent_rejected", False):
+                                st.caption("최근 검증: 박스권 아님")
+                            st.write(f"{row['돌파신호']}")
+                            st.write(f"🧠 {row['이유']}")
 
         st.divider()
 
@@ -1249,8 +1307,13 @@ if display_df is not None:
                 st.markdown("**📝 이 종목 판단 기록**")
 
                 # 현재 기록 → 버튼 위로 이동
+                current_context = _current_scan_context()
                 existing = next(
-                    (v for v in st.session_state["validation_log"] if v["종목코드"] == ticker_code),
+                    (
+                        v for v in st.session_state["validation_log"]
+                        if str(v.get("종목코드", "")).strip().zfill(6) == str(ticker_code).strip().zfill(6)
+                        and _validation_matches_context(v, current_context)
+                    ),
                     None
                 )
                 if existing:
