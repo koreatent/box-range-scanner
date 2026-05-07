@@ -1,3 +1,4 @@
+[README.md](https://github.com/user-attachments/files/27461962/README.md)
 # 박스권 스캐너 컨트롤룸
 
 한국 주식시장(KOSPI / KOSDAQ)에서 박스권 종목을 자동 탐지하는 스캐너.  
