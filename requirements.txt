@@ -1,7 +1,9 @@
-pykrx
-pandas
 streamlit
+pandas
 plotly
-matplotlib
+requests
+python-dotenv
+pykrx
 finance-datareader
 yfinance
+matplotlib

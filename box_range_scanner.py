@@ -35,6 +35,12 @@ try:
 except ImportError:
     _YF_AVAILABLE = False
 
+try:
+    from modules.krx_api import fetch_krx_price_history
+    _KRX_OPEN_API_AVAILABLE = True
+except ImportError:
+    _KRX_OPEN_API_AVAILABLE = False
+
 
 # ── fallback 종목 (시장별 분리) ────────────────────────────────
 FALLBACK_KOSPI = [
@@ -198,42 +204,36 @@ def _fetch_pykrx(ticker, start, end):
         return None
 
 
-def get_price_source_for_scan(tickers, start, end):
+def _fetch_price_fallback(ticker, start, end):
+    for fetch_fn in (_fetch_fdr_krx, _fetch_fdr_naver, _fetch_yfinance):
+        df = fetch_fn(ticker, start, end)
+        if df is not None and not df.empty:
+            return df
+    return None
+
+
+def get_price_source_for_scan(tickers, start, end, market="KOSPI"):
     """
     스캔 전체에 사용할 가격 소스 결정 (probe 종목으로 순차 시도)
-    우선순위: FDR-KRX → FDR-NAVER → YFINANCE → CACHE → PYKRX
+    우선순위: KRX_API → CACHE → PYKRX_FALLBACK → FALLBACK
     반환: {"source":str, "fetch_fn":callable, "cache_date":str|None, "log":[]}
     """
     logs  = []
     probe = tickers[0] if tickers else None
 
-    if _FDR_AVAILABLE and probe:
+    if _KRX_OPEN_API_AVAILABLE and probe:
         try:
-            df = fdr.DataReader(probe, start=start, end=end, data_source="krx")
-            if df is not None and not df.empty and len(df) >= 5:
-                logs.append("[INFO] price source: FDR-KRX success")
-                return {"source":"FDR-KRX","fetch_fn":_fetch_fdr_krx,"cache_date":None,"log":logs}
-        except Exception as e:
-            logs.append(f"[WARN] price source FDR-KRX failed: {e}")
+            def _fetch_krx_api(ticker, fetch_start, fetch_end):
+                return fetch_krx_price_history(ticker, fetch_start, fetch_end, market=market)
 
-    if _FDR_AVAILABLE and probe:
-        try:
-            df = fdr.DataReader(probe, start=start, end=end, data_source="naver")
+            df = _fetch_krx_api(probe, start, end)
             if df is not None and not df.empty and len(df) >= 5:
-                logs.append("[INFO] price source: FDR-NAVER success")
-                return {"source":"FDR-NAVER","fetch_fn":_fetch_fdr_naver,"cache_date":None,"log":logs}
+                logs.append("[INFO] price source: KRX_API success")
+                return {"source":"KRX_API","fetch_fn":_fetch_krx_api,"cache_date":None,"log":logs}
         except Exception as e:
-            logs.append(f"[WARN] price source FDR-NAVER failed: {e}")
-
-    if _YF_AVAILABLE and probe:
-        try:
-            symbol = probe + ".KS"
-            df = yf.download(symbol, start=start, end=end, progress=False, auto_adjust=True)
-            if df is not None and not df.empty and len(df) >= 5:
-                logs.append("[INFO] price source: YFINANCE success")
-                return {"source":"YFINANCE","fetch_fn":_fetch_yfinance,"cache_date":None,"log":logs}
-        except Exception as e:
-            logs.append(f"[WARN] price source YFINANCE failed: {e}")
+            logs.append(f"[WARN] KRX price unavailable: {e}")
+    else:
+        logs.append("[WARN] KRX price unavailable — KRX API module is not available")
 
     cached = _price_cache.get(probe) if probe else None
     if cached:
@@ -241,8 +241,13 @@ def get_price_source_for_scan(tickers, start, end):
         logs.append(f"[WARN] price source: CACHE used ({cache_date})")
         return {"source":"CACHE","fetch_fn":_fetch_from_cache,"cache_date":cache_date,"log":logs}
 
-    logs.append("[ERROR] fallback mode enabled — using pykrx")
-    return {"source":"PYKRX","fetch_fn":_fetch_pykrx,"cache_date":None,"log":logs}
+    if _KRX_AVAILABLE:
+        logs.append("[INFO] price source: PYKRX_FALLBACK")
+        logs.append("[WARN] KRX price unavailable — using pykrx fallback; scan continues")
+        return {"source":"PYKRX_FALLBACK","fetch_fn":_fetch_pykrx,"cache_date":None,"log":logs}
+
+    logs.append("[WARN] pykrx fallback unavailable — using final price fallback")
+    return {"source":"FALLBACK","fetch_fn":_fetch_price_fallback,"cache_date":None,"log":logs}
 
 
 # ══════════════════════════════════════════════════════════════

@@ -1,5 +1,3 @@
-[README.md](https://github.com/user-attachments/files/27125108/README.md)
-
 # 박스권 스캐너 컨트롤룸
 
 한국 주식시장(KOSPI / KOSDAQ)에서 박스권 종목을 자동 탐지하는 스캐너.  
@@ -24,9 +22,13 @@
 
 ```
 box-range-scanner/
-├─ streamlit_app.py       ← UI 메인 (v11.5)
+├─ streamlit_app.py       ← UI 메인
 ├─ box_range_scanner.py   ← 스캔 엔진 모듈 (v10.0)
+├─ modules/
+│  └─ krx_api.py          ← KRX Open API fetch 모듈
+├─ test_krx_api.py        ← KRX API 단독 호출 테스트
 ├─ requirements.txt       ← 설치 목록
+├─ .env.example           ← 환경변수 예시
 └─ README.md              ← 이 파일
 ```
 
@@ -37,6 +39,13 @@ box-range-scanner/
 ```bash
 pip install -r requirements.txt
 streamlit run streamlit_app.py
+```
+
+### KRX API 단독 테스트
+
+```bash
+python test_krx_api.py --market KOSPI --date 20260430
+python test_krx_api.py --market KOSDAQ --date 20260430
 ```
 
 ---
@@ -53,16 +62,10 @@ streamlit run streamlit_app.py
 
 ---
 
-## 📅 분석 기간 선택
+## 📅 분석 기간
 
-사이드바에서 분석 기간을 선택합니다.
-
-| 옵션 | 설명 |
-|------|------|
-| 90일 | 단기 박스권 판단 |
-| 120일 | 안정적인 중기 박스권 판단 (기본값) |
-
-> 차트 기간 / 스캔 기간 / 엔진 기간이 모두 동일하게 적용됩니다.
+분석 기간은 **90일 고정**입니다.  
+차트 기간 / 스캔 기간 / validation context가 모두 90일 기준으로 동작합니다.
 
 ---
 
@@ -87,21 +90,104 @@ streamlit run streamlit_app.py
 
 ### ticker 확보 순서
 ```
-1. FDR StockListing (KOSPI / KOSDAQ)
-2. 최근 성공 캐시
-3. fallback (시장별 고정 종목 25개)
+1. KRX Open API
+2. FDR StockListing
+3. pykrx
+4. 로컬 ticker_cache.csv
+5. fallback (시장별 고정 종목 25개)
 ```
 
 ### 가격 데이터 확보 순서
 ```
-1. FDR-KRX
-2. FDR-NAVER
-3. yfinance
-4. 최근 성공 캐시
-5. pykrx (최종 fallback)
+1. KRX Open API
+2. 런타임 가격 캐시
+3. pykrx fallback
+4. 최종 fallback (FDR / yfinance 계열)
 ```
 
 > 한 스캔 내에서 소스는 단일 고정 — 종목별로 소스를 섞지 않습니다.
+
+---
+
+## 🔐 KRX API 만료일 관리
+
+KRX Open API는 현재 1개월 사용기간으로 승인되어 있으므로, 운영 중 만료일을 별도로 관리합니다.  
+만료일은 앱 코드에 하드코딩하지 않고, README/운영 메모에서만 관리합니다.
+
+### KRX API 설정
+
+로컬 실행 시 `.env.example`을 참고해 프로젝트 루트에 `.env` 파일을 만들고 인증키를 설정합니다.
+
+```env
+KRX_API_KEY=your_krx_open_api_key_here
+```
+
+Streamlit Cloud 배포 시에는 저장소에 `.env`를 올리지 않고, 앱 설정의 Secrets에 아래 값을 등록합니다.
+
+```toml
+KRX_API_KEY = "your_krx_open_api_key_here"
+```
+
+KOSDAQ API가 별도 키로 승인된 경우에만 선택적으로 아래 환경변수를 추가합니다.
+
+```env
+KRX_API_KEY_KOSDAQ=your_kosdaq_api_key_here
+```
+
+### 현재 승인 API
+
+| API | 상태 | 만료일 |
+|------|------|------|
+| 유가증권 일별매매정보 | 승인 완료 | 2026/06/03 |
+| 코스닥 종목기본정보 | 승인 완료 | 2026/06/05 |
+
+### 추가 승인 예정 API
+
+| API | 상태 |
+|------|------|
+| 코스닥 일별매매정보 | 승인 예정 |
+| ETF 일별매매정보 | 승인 예정 |
+| ETN 일별매매정보 | 승인 예정 |
+| 유가증권 종목기본정보 | 승인 예정 |
+| 코넥스 일별매매정보 | 승인 예정 |
+| 코넥스 종목기본정보 | 승인 예정 |
+
+### 운영 체크
+
+- 만료 7일 전 KRX Open API 마이페이지에서 사용기간 연장 또는 재승인 여부 확인
+- 신규 승인 API는 승인 완료 후 실제 endpoint 단독 호출 테스트 실행
+- 인증키는 `.env` 또는 환경변수로만 관리하고 코드에 직접 입력하지 않음
+- 만료 또는 권한 문제 발생 시 KRX 응답은 `401 Unauthorized API Call`로 표시될 수 있음
+- 앱/테스트 로그에서 `market`, `api_id`, `url`, `401` 여부를 확인해 어떤 API 권한 문제인지 구분
+
+---
+
+## ✅ v12.x KRX 통합 검증 결과
+
+### KOSPI 단독
+- `ticker_source = KRX_API`
+- `price_source = KRX_API`
+- 전체 스캔 완료, fallback 제한 모드 없음
+
+### KOSDAQ 단독
+- `ticker_source = KRX_API`
+- `price_source = KRX_API`
+- `scan_total = 1823`
+- `scan_processed = 1820`
+- `scan_fail = 3`
+- `chunk = 19 / 19 완료`
+- TOP5 / 테이블 / 차트 정상 출력
+
+### ALL 통합
+- `ticker_source = KRX_API`
+- `price_source = KRX_API`
+- `scan_total = 2771`
+- `scan_processed = 2768`
+- `scan_fail = 3`
+- `chunk = 28 / 28 완료`
+- fallback 제한 모드 없음
+- 후보 `626개`, 후보 비율 `22.6%`
+- TOP5 / 테이블 / 차트 정상 출력
 
 ---
 
@@ -112,15 +198,15 @@ streamlit run streamlit_app.py
 | 배지 | 내용 |
 |------|------|
 | 시장 | KOSPI / KOSDAQ / ALL |
-| ticker 소스 | FDR / CACHE / FALLBACK |
-| 가격 소스 | FDR-KRX / FDR-NAVER / YFINANCE / CACHE / PYKRX |
+| ticker 소스 | KRX_API / FDR / PYKRX / CACHE / FALLBACK |
+| 가격 소스 | KRX_API / CACHE / PYKRX_FALLBACK / FALLBACK |
 | 모드 | 전체 스캔 / 빠른 스캔 |
 | 캐시 | 캐시 사용 시 날짜 표시 |
 
 ### 상태별 컬러
 | 상태 | 표시 | 의미 |
 |------|------|------|
-| ✅ 정상 | 초록 | FDR 기반 실시간 데이터 |
+| ✅ 정상 | 초록 | KRX/FDR/PYKRX 기반 데이터 |
 | ⚠️ 경고 | 노랑 | 캐시 데이터 사용 중 |
 | 🚨 위기 | 빨강 | fallback 종목 기준 제한 모드 |
 
