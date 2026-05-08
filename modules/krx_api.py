@@ -21,7 +21,13 @@ API_IDS = {
 
 FIELD_MAP = {
     "ISU_CD": "종목코드",
+    "ISU_SRT_CD": "종목코드",
+    "isuCd": "종목코드",
+    "isuSrtCd": "종목코드",
     "ISU_NM": "종목명",
+    "ISU_ABBRV": "종목명",
+    "isuNm": "종목명",
+    "isuAbbrv": "종목명",
     "TDD_OPNPRC": "시가",
     "TDD_HGPRC": "고가",
     "TDD_LWPRC": "저가",
