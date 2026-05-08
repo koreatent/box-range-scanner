@@ -47,6 +47,7 @@ streamlit_app.py — v11.5
   v8.3 - threshold 슬라이더, 튜닝 권고 배너
 """
 
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -106,7 +107,7 @@ except ImportError:
     _KRX_AVAILABLE = False
 
 try:
-    from modules.krx_api import fetch_krx_daily_trade
+    from modules.krx_api import fetch_krx_daily_trade, fetch_krx_price_history
 
     _KRX_OPEN_API_AVAILABLE = True
 except ImportError:
@@ -507,17 +508,87 @@ def _score_band_distribution(df, denominator):
     return rows
 
 
-def get_price_chart(ticker_code, days=90):
+def _sync_krx_key_from_streamlit_secrets():
+    for key in ("KRX_API_KEY", "KRX_API_KEY_KOSPI", "KRX_API_KEY_KOSDAQ"):
+        if os.getenv(key):
+            continue
+        try:
+            value = st.secrets.get(key)
+        except Exception:
+            value = None
+        if value:
+            os.environ[key] = str(value)
+
+
+def _empty_chart_meta(ticker_code, ticker_name, market, source="-", error_message=""):
+    return {
+        "chart_source": source,
+        "selected_code": str(ticker_code).strip(),
+        "selected_name": str(ticker_name or ""),
+        "market": str(market or "-"),
+        "row_count": 0,
+        "error_message": error_message,
+    }
+
+
+def get_price_chart(ticker_code, days=90, market="KOSPI", ticker_name=""):
+    ticker_code = str(ticker_code).strip()
     end = _get_date(1)
     start = _get_date(days)
+    chart_meta = _empty_chart_meta(ticker_code, ticker_name, market)
+
+    if _KRX_OPEN_API_AVAILABLE:
+        try:
+            _sync_krx_key_from_streamlit_secrets()
+            df = fetch_krx_price_history(ticker_code, start, end, market=market)
+            row_count = 0 if df is None else len(df)
+            chart_meta.update(
+                {
+                    "chart_source": "KRX_API",
+                    "row_count": row_count,
+                    "error_message": "" if row_count else "KRX_API returned empty chart data",
+                }
+            )
+            st.session_state["chart_meta"] = chart_meta
+            if df is not None and not df.empty and {"시가", "고가", "저가", "종가"}.issubset(df.columns):
+                cols = [col for col in ["시가", "고가", "저가", "종가", "거래량"] if col in df.columns]
+                return df[cols]
+        except Exception as e:
+            chart_meta.update(
+                {
+                    "chart_source": "KRX_API",
+                    "row_count": 0,
+                    "error_message": str(e)[:300],
+                }
+            )
+            st.session_state["chart_meta"] = chart_meta
+
     if _KRX_AVAILABLE:
         try:
             df = krx_stock.get_market_ohlcv_by_date(start, end, ticker_code)
             if df is not None and not df.empty and {"시가", "종가"}.issubset(df.columns):
                 cols = [col for col in ["시가", "고가", "저가", "종가", "거래량"] if col in df.columns]
+                st.session_state["chart_meta"] = {
+                    "chart_source": "PYKRX_FALLBACK",
+                    "selected_code": ticker_code,
+                    "selected_name": str(ticker_name or ""),
+                    "market": str(market or "-"),
+                    "row_count": len(df),
+                    "error_message": "",
+                }
                 return df[cols]
-        except Exception:
-            pass
+        except Exception as e:
+            chart_meta.update(
+                {
+                    "chart_source": "PYKRX_FALLBACK",
+                    "row_count": 0,
+                    "error_message": str(e)[:300],
+                }
+            )
+            st.session_state["chart_meta"] = chart_meta
+    else:
+        chart_meta.update({"error_message": "pykrx fallback is not available"})
+        st.session_state["chart_meta"] = chart_meta
     return None
 
 
@@ -1691,7 +1762,21 @@ if display_df is not None:
                 st.caption("[검증용] — 알고리즘 기준 임시 분류")
 
             with st.spinner("차트 불러오는 중..."):
-                chart_df = get_price_chart(ticker_code, days=analysis_days)
+                chart_df = get_price_chart(
+                    ticker_code,
+                    days=analysis_days,
+                    market=market,
+                    ticker_name=selected_name,
+                )
+            chart_meta = st.session_state.get("chart_meta", {})
+            with st.expander("차트 데이터 로그", expanded=False):
+                st.caption(f"chart_source: {chart_meta.get('chart_source', '-')}")
+                st.caption(f"selected_code: {chart_meta.get('selected_code', ticker_code)}")
+                st.caption(f"selected_name: {chart_meta.get('selected_name', selected_name)}")
+                st.caption(f"market: {chart_meta.get('market', market)}")
+                st.caption(f"row_count: {chart_meta.get('row_count', 0)}")
+                if chart_meta.get("error_message"):
+                    st.caption(f"error_message: {chart_meta.get('error_message')}")
             if chart_df is None or chart_df.empty:
                 st.warning("차트 데이터를 불러올 수 없습니다.")
             else:
