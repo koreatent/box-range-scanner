@@ -1,1 +1,30 @@
+# Secrets / local config
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Runtime cache / temp
+.tmp_pip/
+.tmp_streamlit/
+.streamlit/cache/
+*.cache
+cache/
 ticker_cache.csv
+
+# Local outputs / logs
+*.csv
+*.log
+validation_log.csv
+streamlit_pid.txt
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1317,7 +1317,7 @@ scan_mode = st.sidebar.radio(
 )
 is_full_scan = scan_mode.startswith("🔍")
 
-analysis_days = 90
+analysis_days = 95
 
 if is_full_scan:
     market_label = {"KOSPI": "코스피", "KOSDAQ": "코스닥", "ALL": "전체(KOSPI+KOSDAQ)"}.get(
