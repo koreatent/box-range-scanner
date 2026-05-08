@@ -149,6 +149,13 @@ def _ticker_df_from_codes(tickers, market, names=None):
     )
 
 
+def _is_invalid_ticker_name(name, code=""):
+    current = str(name or "").strip()
+    code = str(code or "").strip().zfill(6)
+    invalid_values = {"", "none", "nan", "nat", "null", "<na>", code.lower()}
+    return current.lower() in invalid_values or "empty dataframe" in current.lower()
+
+
 def _normalize_ticker_df(df, market=None):
     if df is None or df.empty:
         return pd.DataFrame(columns=["종목코드", "종목명", "시장"])
@@ -157,10 +164,25 @@ def _normalize_ticker_df(df, market=None):
     rename_map = {
         "Code": "종목코드",
         "Symbol": "종목코드",
+        "ISU_CD": "종목코드",
+        "ISU_SRT_CD": "종목코드",
+        "isuCd": "종목코드",
+        "isuSrtCd": "종목코드",
         "Name": "종목명",
+        "ISU_NM": "종목명",
+        "ISU_ABBRV": "종목명",
+        "isuNm": "종목명",
+        "isuAbbrv": "종목명",
         "Market": "시장",
+        "MKT_NM": "시장",
+        "mktNm": "시장",
     }
     out = out.rename(columns={k: v for k, v in rename_map.items() if k in out.columns})
+    for col in ["종목코드", "종목명", "시장"]:
+        duplicated_cols = out.loc[:, out.columns == col]
+        if duplicated_cols.shape[1] > 1:
+            out = out.drop(columns=[col])
+            out[col] = duplicated_cols.bfill(axis=1).iloc[:, 0]
     if "종목코드" not in out.columns:
         raise ValueError("ticker dataframe has no code column")
     if "종목명" not in out.columns:
@@ -170,7 +192,10 @@ def _normalize_ticker_df(df, market=None):
 
     out = out[["종목코드", "종목명", "시장"]].copy()
     out["종목코드"] = out["종목코드"].astype(str).str.strip().str.zfill(6)
-    out["종목명"] = out["종목명"].astype(str)
+    out["종목명"] = out.apply(
+        lambda row: row["종목코드"] if _is_invalid_ticker_name(row["종목명"], row["종목코드"]) else str(row["종목명"]).strip(),
+        axis=1,
+    )
     out["시장"] = out["시장"].astype(str).str.upper()
     out = out[out["종목코드"].str.len() == 6]
     out = out.drop_duplicates("종목코드").sort_values("종목코드").reset_index(drop=True)
@@ -253,6 +278,7 @@ def get_ticker_list(market="ALL"):
         logs.extend(kospi_logs)
         logs.extend(kosdaq_logs)
         logs.append(f"[INFO] ALL ticker merge complete: {len(df)} tickers")
+        logs.append(f"[INFO] ticker_name_map size ALL: {len(_name_map_from_ticker_df(df))}")
         return df, source, logs, max(cache_dates) if cache_dates else None
 
     if _KRX_OPEN_API_AVAILABLE:
@@ -264,6 +290,7 @@ def get_ticker_list(market="ALL"):
             if not df.empty:
                 save_ticker_cache(df, source="KRX_API")
                 logs.append(f"[INFO] ticker source KRX_API-{market_up}: {len(df)} tickers (basDd={used_bas_dd})")
+                logs.append(f"[INFO] ticker_name_map size {market_up}: {len(_name_map_from_ticker_df(df))}")
                 return df, "KRX_API", logs, None
             logs.append(f"[WARN] KRX API data empty: basDd={bas_dd}, market={market_up}")
         except Exception as e:
@@ -315,8 +342,16 @@ def get_ticker_list(market="ALL"):
 
 def get_market_tickers(market="KOSPI"):
     ticker_df, ticker_source, logs, cache_date = get_ticker_list(market)
+    tickers = ticker_df["종목코드"].astype(str).str.strip().str.zfill(6).tolist()
+    name_map = _name_map_from_ticker_df(ticker_df)
+    unresolved_count = max(0, len(tickers) - len(name_map))
+    sample_names = list(name_map.items())[:3]
+    logs.append(f"[INFO] ticker_name_map size = {len(name_map)}")
+    logs.append(f"[INFO] name resolve failed count = {unresolved_count}")
+    logs.append(f"[INFO] ticker_name_map sample = {sample_names}")
     return {
-        "tickers": ticker_df["종목코드"].tolist(),
+        "tickers": tickers,
+        "name_map": name_map,
         "source": ticker_source,
         "cache_date": cache_date,
         "log": logs,
@@ -324,6 +359,72 @@ def get_market_tickers(market="KOSPI"):
 
 
 # ── 유틸 ──────────────────────────────────────────────────────
+def _name_map_from_ticker_df(ticker_df):
+    if ticker_df is None or ticker_df.empty:
+        return {}
+    if not {"종목코드", "종목명"}.issubset(ticker_df.columns):
+        return {}
+    codes = ticker_df["종목코드"].astype(str).str.strip().str.zfill(6)
+    names = ticker_df["종목명"].astype(str).str.strip()
+    return {
+        code: name
+        for code, name in zip(codes, names)
+        if code and not _is_invalid_ticker_name(name, code)
+    }
+
+
+def _build_ticker_name_map(tickers, market):
+    tickers = _normalize_tickers(tickers)
+    if not tickers:
+        return {}
+
+    name_map = {}
+    market_up = str(market or "KOSPI").upper()
+
+    if _KRX_OPEN_API_AVAILABLE:
+        markets = ["KOSPI", "KOSDAQ"] if market_up == "ALL" else [market_up]
+        for market_name in markets:
+            try:
+                df = fetch_krx_daily_trade(bas_dd=_get_date(1), market=market_name)
+                name_map.update(_name_map_from_ticker_df(_normalize_ticker_df(df, market=market_name)))
+            except Exception:
+                pass
+
+    missing = [ticker for ticker in tickers if ticker not in name_map]
+    if missing and _KRX_AVAILABLE:
+        for ticker in missing:
+            try:
+                name = str(krx_stock.get_market_ticker_name(ticker)).strip()
+                if not _is_invalid_ticker_name(name, ticker):
+                    name_map[ticker] = name
+            except Exception:
+                continue
+
+    return {ticker: name_map[ticker] for ticker in tickers if ticker in name_map}
+
+
+def _apply_ticker_name_map(df, ticker_name_map):
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    if "종목코드" not in out.columns:
+        return out
+    if "종목명" not in out.columns:
+        out["종목명"] = out["종목코드"].astype(str)
+
+    def _resolve_name(row):
+        code = str(row.get("종목코드", "")).strip().zfill(6)
+        current = str(row.get("종목명", "")).strip()
+        mapped = ticker_name_map.get(code)
+        if mapped and _is_invalid_ticker_name(current, code):
+            return mapped
+        return current if not _is_invalid_ticker_name(current, code) else code
+
+    out["종목코드"] = out["종목코드"].astype(str).str.strip().str.zfill(6)
+    out["종목명"] = out.apply(_resolve_name, axis=1)
+    return out
+
+
 def calc_suggested_threshold(current, ratio):
     if ratio > RATIO_HIGH:
         return current + 5, f"후보 비율 {ratio}% > {RATIO_HIGH}% — 하한값(score_min) {current} → {current+5} 권고"
@@ -692,6 +793,7 @@ def _clear_partial_state():
         "scan_tickers": [],
         "scan_ticker_cache_date": None,
         "scan_ticker_src": "-",
+        "scan_ticker_name_map": {},
         "scan_price_src": "-",
         "scan_cache_date": None,
         "scan_fallback": False,
@@ -729,6 +831,7 @@ def _reset_scan_state_for_new_scan():
         "scan_total",
         "scan_market",
         "scan_ticker_src",
+        "scan_ticker_name_map",
         "scan_ticker_cache_date",
         "scan_price_src",
         "scan_cache_date",
@@ -784,6 +887,7 @@ def _run_full_scan(scan_market, score_min, score_max=None, resume=False, days=90
             ticker_result = get_market_tickers(scan_market)
 
         tickers = ticker_result["tickers"]
+        ticker_name_map = ticker_result.get("name_map", {})
         ticker_src = ticker_result["source"]
         ticker_logs = ticker_result["log"]
         ticker_cache_date = ticker_result.get("cache_date")
@@ -821,6 +925,7 @@ def _run_full_scan(scan_market, score_min, score_max=None, resume=False, days=90
                 "scan_days": days,
                 "scan_date": datetime.now().strftime("%Y-%m-%d"),
                 "scan_ticker_src": ticker_src,
+                "scan_ticker_name_map": ticker_name_map,
                 "scan_ticker_cache_date": ticker_cache_date,
                 "scan_all_tickers": tickers,
                 "scan_tickers": tickers,
@@ -847,6 +952,7 @@ def _run_full_scan(scan_market, score_min, score_max=None, resume=False, days=90
 
     tickers = st.session_state.get("scan_all_tickers") or st.session_state.get("scan_tickers") or []
     ticker_src = st.session_state.get("scan_ticker_src", "-")
+    ticker_name_map = st.session_state.get("scan_ticker_name_map", {})
     ticker_cache_date = st.session_state.get("scan_ticker_cache_date")
     is_fallback = st.session_state.get("scan_fallback", False)
     partial_rows = st.session_state.get("partial_results") or []
@@ -873,7 +979,7 @@ def _run_full_scan(scan_market, score_min, score_max=None, resume=False, days=90
         st.session_state["current_chunk_index"] = current_chunk_index
 
     if not remaining_tickers or current_chunk_index >= len(chunks) or _is_scan_complete_by_attempts(total):
-        final_df = _merge_result_rows(partial_rows, None)
+        final_df = _apply_ticker_name_map(_merge_result_rows(partial_rows, None), ticker_name_map)
         processed_total = int(st.session_state.get("scan_processed", 0) or 0)
         fail_total = int(st.session_state.get("scan_fail", 0) or 0)
         attempted_total = min(total, processed_total + fail_total)
@@ -891,6 +997,7 @@ def _run_full_scan(scan_market, score_min, score_max=None, resume=False, days=90
                 "scan_fallback": is_fallback,
                 "scan_market": scan_market,
                 "scan_ticker_src": ticker_src,
+                "scan_ticker_name_map": ticker_name_map,
                 "scan_price_src": st.session_state.get("scan_price_src", "-"),
                 "scan_cache_date": st.session_state.get("scan_cache_date"),
                 "scan_ratio": ratio,
@@ -1002,7 +1109,10 @@ def _run_full_scan(scan_market, score_min, score_max=None, resume=False, days=90
 
     def save_partial_state(partial_rows, processed_count, fail_count, current_index, total, processed_tickers):
         current_rows = st.session_state.get("partial_results") or []
-        merged_df = _merge_result_rows(current_rows, pd.DataFrame(partial_rows))
+        merged_df = _apply_ticker_name_map(
+            _merge_result_rows(current_rows, pd.DataFrame(partial_rows)),
+            ticker_name_map,
+        )
         merged_processed_tickers = _merge_processed_tickers(processed_tickers_base, processed_tickers)
         st.session_state["partial_results"] = merged_df.to_dict("records")
         st.session_state["processed_tickers"] = merged_processed_tickers
@@ -1032,7 +1142,8 @@ def _run_full_scan(scan_market, score_min, score_max=None, resume=False, days=90
     fail_total = fail_base + fail_count_chunk
     attempted_total = min(total, processed_total + fail_total)
     current_rows = st.session_state.get("partial_results") or []
-    merged_df = _merge_result_rows(current_rows, df_chunk)
+    df_chunk = _apply_ticker_name_map(df_chunk, ticker_name_map)
+    merged_df = _apply_ticker_name_map(_merge_result_rows(current_rows, df_chunk), ticker_name_map)
     ratio = round(len(merged_df) / processed_total * 100, 1) if processed_total > 0 else 0
     suggested, tune_msg = calc_suggested_threshold(score_min, ratio)
     next_chunk_index = current_chunk_index + 1
@@ -1053,6 +1164,7 @@ def _run_full_scan(scan_market, score_min, score_max=None, resume=False, days=90
                 "scan_fallback": is_fallback,
                 "scan_market": scan_market,
                 "scan_ticker_src": ticker_src,
+                "scan_ticker_name_map": ticker_name_map,
                 "scan_price_src": price_src,
                 "scan_cache_date": cache_date,
                 "scan_ratio": ratio,
@@ -1088,6 +1200,7 @@ def _run_full_scan(scan_market, score_min, score_max=None, resume=False, days=90
             "scan_fallback": is_fallback,
             "scan_market": scan_market,
             "scan_ticker_src": ticker_src,
+            "scan_ticker_name_map": ticker_name_map,
             "scan_price_src": price_src,
             "scan_cache_date": cache_date,
             "scan_ratio": ratio,
@@ -1167,7 +1280,10 @@ _scan_completed_by_attempts = _is_scan_complete_by_attempts(_resume_total)
 if _scan_completed_by_attempts:
     _completed_rows = st.session_state.get("partial_results") or []
     if "result" not in st.session_state and _completed_rows:
-        st.session_state["result"] = _merge_result_rows(_completed_rows, None)
+        st.session_state["result"] = _apply_ticker_name_map(
+            _merge_result_rows(_completed_rows, None),
+            st.session_state.get("scan_ticker_name_map", {}),
+        )
     st.session_state["scan_running"] = False
     st.session_state["scan_interrupted"] = False
     st.session_state["chunk_executing"] = False
@@ -1289,6 +1405,7 @@ if scan_start_clicked:
 
                 start = _get_date(analysis_days)
                 end = _get_date(1)
+                ticker_name_map = _build_ticker_name_map(tickers, market_choice)
                 price_info = get_price_source_for_scan(tickers, start, end, market=market_choice)
 
                 df, processed_count, fail_count, _ = run_scan(
@@ -1296,6 +1413,7 @@ if scan_start_clicked:
                     score_threshold=FAST_SCORE_THRESHOLD,
                     price_source_info=price_info,
                 )
+                df = _apply_ticker_name_map(df, ticker_name_map)
                 ratio = round(len(df) / processed_count * 100, 1) if processed_count > 0 else 0
 
                 st.session_state.update(
@@ -1308,6 +1426,7 @@ if scan_start_clicked:
                         "scan_fallback": False,
                         "scan_market": market_choice,
                         "scan_ticker_src": "PYKRX",
+                        "scan_ticker_name_map": ticker_name_map,
                         "scan_price_src": price_info["source"],
                         "scan_current_status": "빠른 스캔 완료",
                         "scan_cache_date": price_info.get("cache_date"),
@@ -1403,7 +1522,7 @@ else:
 
 if display_df is not None:
     mode = st.session_state.get("scan_mode", "fast")
-    df = display_df.copy()
+    df = _apply_ticker_name_map(display_df.copy(), st.session_state.get("scan_ticker_name_map", {}))
     display_score_min, display_score_max = _get_display_score_range()
     score_range_label = _score_range_label(display_score_min, display_score_max)
     if mode == "full" and "점수" in df.columns:
