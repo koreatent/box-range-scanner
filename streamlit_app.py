@@ -759,6 +759,30 @@ def _build_chunks(tickers):
     return [tickers[i : i + CHUNK_SIZE] for i in range(0, len(tickers), CHUNK_SIZE)]
 
 
+def _chart_option_label(row):
+    return f"{row['종목명']} / {str(row['종목코드']).zfill(6)} / {row['점수']}점"
+
+
+def _resolve_chart_selection(df):
+    if df is None or df.empty:
+        return None, None, None
+
+    codes = df["종목코드"].astype(str).str.strip().str.zfill(6).tolist()
+    saved_code = st.session_state.get("selected_chart_code")
+    saved_index = int(st.session_state.get("selected_chart_index", 0) or 0)
+
+    if saved_code in codes:
+        selected_index = codes.index(saved_code)
+    else:
+        selected_index = max(0, min(saved_index, len(codes) - 1))
+
+    st.session_state["selected_chart_index"] = selected_index
+    st.session_state["selected_chart_code"] = codes[selected_index]
+
+    labels = [_chart_option_label(row) for _, row in df.iterrows()]
+    return codes, labels, selected_index
+
+
 def _score_range_label(score_min, score_max):
     return f"{score_min}~{score_max}점"
 
@@ -877,6 +901,8 @@ def _clear_partial_state():
         "ui_score_range": (DEFAULT_SCORE_MIN, DEFAULT_SCORE_MAX),
         "trigger_resume": False,
         "trigger_clear": False,
+        "selected_chart_index": 0,
+        "selected_chart_code": None,
         "current_chunk_index": 0,
         "chunk_executing": False,
     }.items():
@@ -914,6 +940,8 @@ def _reset_scan_state_for_new_scan():
         "suggested_threshold",
         "trigger_resume",
         "trigger_clear",
+        "selected_chart_index",
+        "selected_chart_code",
         "scan_logs",
         "status_messages",
         "last_status",
@@ -1744,12 +1772,49 @@ if display_df is not None:
         st.dataframe(df, use_container_width=True, hide_index=True)
         st.divider()
 
-        name_list = df["종목명"].tolist()
-        selected_name = st.selectbox("차트 볼 종목 선택", ["선택하세요"] + name_list)
+        chart_codes, chart_labels, selected_index = _resolve_chart_selection(df)
 
-        if selected_name != "선택하세요":
-            ticker_code = df.loc[df["종목명"] == selected_name, "종목코드"].values[0]
-            score = df.loc[df["종목명"] == selected_name, "점수"].values[0]
+        if chart_codes:
+            nav_col1, nav_col2 = st.columns(2)
+            with nav_col1:
+                prev_clicked = st.button(
+                    "◀ 이전 종목",
+                    use_container_width=True,
+                    disabled=selected_index <= 0,
+                )
+            with nav_col2:
+                next_clicked = st.button(
+                    "다음 종목 ▶",
+                    use_container_width=True,
+                    disabled=selected_index >= len(chart_codes) - 1,
+                )
+
+            if prev_clicked:
+                selected_index = max(0, selected_index - 1)
+                st.session_state["selected_chart_index"] = selected_index
+                st.session_state["selected_chart_code"] = chart_codes[selected_index]
+            elif next_clicked:
+                selected_index = min(len(chart_codes) - 1, selected_index + 1)
+                st.session_state["selected_chart_index"] = selected_index
+                st.session_state["selected_chart_code"] = chart_codes[selected_index]
+
+            selected_label = st.selectbox(
+                "차트 볼 종목 선택",
+                chart_labels,
+                index=selected_index,
+            )
+            dropdown_index = chart_labels.index(selected_label)
+            if dropdown_index != selected_index:
+                selected_index = dropdown_index
+                st.session_state["selected_chart_index"] = selected_index
+                st.session_state["selected_chart_code"] = chart_codes[selected_index]
+
+            selected_row = df.iloc[selected_index]
+            selected_name = str(selected_row["종목명"])
+            ticker_code = str(selected_row["종목코드"]).strip().zfill(6)
+            score = selected_row["점수"]
+            st.caption(f"현재: {selected_index + 1} / {len(chart_codes)}")
+            st.caption(f"선택 종목: {selected_name} / {ticker_code} / {score}점")
 
             # ── 검증용 태그 ────────────────────────────────────
             box_label = _box_label(score)
