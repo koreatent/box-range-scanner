@@ -53,6 +53,7 @@ from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -752,11 +753,22 @@ def _render_candidate_table(df):
             """
         )
 
-    st.markdown(
-        f"""
+    table_height = 430
+    html_table = f"""
+        <!doctype html>
+        <html>
+        <head>
+        <meta charset="utf-8">
         <style>
+        html, body {{
+            margin: 0;
+            padding: 0;
+            background: transparent;
+            color: inherit;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }}
         .candidate-table-wrap {{
-            max-height: 420px;
+            height: 420px;
             overflow-y: auto;
             overflow-x: auto;
             border: 1px solid rgba(148, 163, 184, 0.28);
@@ -770,6 +782,7 @@ def _render_candidate_table(df):
             border-collapse: collapse;
             font-size: 14px;
             line-height: 1.35;
+            color: rgb(226, 232, 240);
         }}
         .candidate-table thead th {{
             position: sticky;
@@ -777,7 +790,7 @@ def _render_candidate_table(df):
             z-index: 1;
             height: 42px;
             padding: 0 12px;
-            background: rgb(248, 250, 252);
+            background: rgb(17, 24, 39);
             border-bottom: 1px solid rgba(148, 163, 184, 0.35);
             text-align: left;
             white-space: nowrap;
@@ -789,6 +802,9 @@ def _render_candidate_table(df):
         }}
         .candidate-table tbody tr:nth-child(even) {{
             background: rgba(148, 163, 184, 0.06);
+        }}
+        .candidate-table tbody tr:hover {{
+            background: rgba(59, 130, 246, 0.14);
         }}
         .candidate-table td {{
             height: 42px;
@@ -822,6 +838,8 @@ def _render_candidate_table(df):
             }}
         }}
         </style>
+        </head>
+        <body>
         <div class="candidate-table-wrap">
           <table class="candidate-table">
             <thead>
@@ -839,9 +857,10 @@ def _render_candidate_table(df):
             </tbody>
           </table>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        </body>
+        </html>
+        """
+    components.html(html_table, height=table_height, scrolling=True)
 
 
 def _merge_result_rows(existing_rows, new_df):
