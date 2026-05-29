@@ -47,6 +47,7 @@ streamlit_app.py — v11.5
   v8.3 - threshold 슬라이더, 튜닝 권고 배너
 """
 
+import html
 import os
 from datetime import datetime
 from pathlib import Path
@@ -717,6 +718,132 @@ def _render_price_flow_chart(chart_df):
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
+def _render_candidate_table(df):
+    cols = ["종목코드", "종목명", "점수", "거래량", "이유", "돌파신호"]
+    table_df = df[[col for col in cols if col in df.columns]].copy()
+
+    def esc(value):
+        if pd.isna(value):
+            return ""
+        return html.escape(str(value))
+
+    rows_html = []
+    for _, row in table_df.iterrows():
+        code = esc(str(row.get("종목코드", "")).zfill(6))
+        name = esc(row.get("종목명", ""))
+        score = esc(row.get("점수", ""))
+        volume_raw = row.get("거래량", "")
+        try:
+            volume = f"{int(volume_raw):,}"
+        except Exception:
+            volume = esc(volume_raw)
+        reason = esc(row.get("이유", ""))
+        signal = esc(row.get("돌파신호", ""))
+        rows_html.append(
+            f"""
+            <tr>
+              <td class="code">{code}</td>
+              <td class="name">{name}</td>
+              <td class="score">{score}</td>
+              <td class="volume">{volume}</td>
+              <td class="reason">{reason}</td>
+              <td class="signal">{signal}</td>
+            </tr>
+            """
+        )
+
+    st.markdown(
+        f"""
+        <style>
+        .candidate-table-wrap {{
+            max-height: 420px;
+            overflow-y: auto;
+            overflow-x: auto;
+            border: 1px solid rgba(148, 163, 184, 0.28);
+            border-radius: 8px;
+            scroll-snap-type: y proximity;
+            scrollbar-gutter: stable;
+        }}
+        .candidate-table {{
+            width: 100%;
+            min-width: 920px;
+            border-collapse: collapse;
+            font-size: 14px;
+            line-height: 1.35;
+        }}
+        .candidate-table thead th {{
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            height: 42px;
+            padding: 0 12px;
+            background: rgb(248, 250, 252);
+            border-bottom: 1px solid rgba(148, 163, 184, 0.35);
+            text-align: left;
+            white-space: nowrap;
+        }}
+        .candidate-table tbody tr {{
+            height: 42px;
+            scroll-snap-align: start;
+            border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+        }}
+        .candidate-table tbody tr:nth-child(even) {{
+            background: rgba(148, 163, 184, 0.06);
+        }}
+        .candidate-table td {{
+            height: 42px;
+            padding: 0 12px;
+            vertical-align: middle;
+            white-space: nowrap;
+        }}
+        .candidate-table td.reason {{
+            max-width: 320px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }}
+        .candidate-table td.code {{
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        }}
+        .candidate-table td.score,
+        .candidate-table td.volume {{
+            text-align: right;
+        }}
+        @media (max-width: 760px) {{
+            .candidate-table-wrap {{
+                max-height: 360px;
+            }}
+            .candidate-table {{
+                font-size: 13px;
+                min-width: 820px;
+            }}
+            .candidate-table thead th,
+            .candidate-table td {{
+                padding: 0 10px;
+            }}
+        }}
+        </style>
+        <div class="candidate-table-wrap">
+          <table class="candidate-table">
+            <thead>
+              <tr>
+                <th>종목코드</th>
+                <th>종목명</th>
+                <th>점수</th>
+                <th>거래량</th>
+                <th>이유</th>
+                <th>돌파신호</th>
+              </tr>
+            </thead>
+            <tbody>
+              {''.join(rows_html)}
+            </tbody>
+          </table>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _merge_result_rows(existing_rows, new_df):
     """partial 결과와 재개 스캔 결과를 종목코드 기준으로 병합"""
     cols = ["종목코드", "종목명", "점수", "거래량", "이유", "돌파신호"]
@@ -761,26 +888,6 @@ def _build_chunks(tickers):
 
 def _chart_option_label(row):
     return f"{row['종목명']} / {str(row['종목코드']).zfill(6)} / {row['점수']}점"
-
-
-def _resolve_chart_selection(df):
-    if df is None or df.empty:
-        return None, None, None
-
-    codes = df["종목코드"].astype(str).str.strip().str.zfill(6).tolist()
-    saved_code = st.session_state.get("selected_chart_code")
-    saved_index = int(st.session_state.get("selected_chart_index", 0) or 0)
-
-    if saved_code in codes:
-        selected_index = codes.index(saved_code)
-    else:
-        selected_index = max(0, min(saved_index, len(codes) - 1))
-
-    st.session_state["selected_chart_index"] = selected_index
-    st.session_state["selected_chart_code"] = codes[selected_index]
-
-    labels = [_chart_option_label(row) for _, row in df.iterrows()]
-    return codes, labels, selected_index
 
 
 def _score_range_label(score_min, score_max):
@@ -901,8 +1008,6 @@ def _clear_partial_state():
         "ui_score_range": (DEFAULT_SCORE_MIN, DEFAULT_SCORE_MAX),
         "trigger_resume": False,
         "trigger_clear": False,
-        "selected_chart_index": 0,
-        "selected_chart_code": None,
         "current_chunk_index": 0,
         "chunk_executing": False,
     }.items():
@@ -940,8 +1045,6 @@ def _reset_scan_state_for_new_scan():
         "suggested_threshold",
         "trigger_resume",
         "trigger_clear",
-        "selected_chart_index",
-        "selected_chart_code",
         "scan_logs",
         "status_messages",
         "last_status",
@@ -1769,52 +1872,18 @@ if display_df is not None:
             st.caption(f"{score_range_label} 범위 | 높을수록 박스권 가능성 높음 (100점 최고) | 시장: {market}")
         else:
             st.caption(f"높을수록 박스권 가능성 높음 (100점 최고) | 시장: {market}")
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        _render_candidate_table(df)
         st.divider()
 
-        chart_codes, chart_labels, selected_index = _resolve_chart_selection(df)
+        chart_labels = [_chart_option_label(row) for _, row in df.iterrows()]
+        selected_label = st.selectbox("차트 볼 종목 선택", ["선택하세요"] + chart_labels)
 
-        if chart_codes:
-            nav_col1, nav_col2 = st.columns(2)
-            with nav_col1:
-                prev_clicked = st.button(
-                    "◀ 이전 종목",
-                    use_container_width=True,
-                    disabled=selected_index <= 0,
-                )
-            with nav_col2:
-                next_clicked = st.button(
-                    "다음 종목 ▶",
-                    use_container_width=True,
-                    disabled=selected_index >= len(chart_codes) - 1,
-                )
-
-            if prev_clicked:
-                selected_index = max(0, selected_index - 1)
-                st.session_state["selected_chart_index"] = selected_index
-                st.session_state["selected_chart_code"] = chart_codes[selected_index]
-            elif next_clicked:
-                selected_index = min(len(chart_codes) - 1, selected_index + 1)
-                st.session_state["selected_chart_index"] = selected_index
-                st.session_state["selected_chart_code"] = chart_codes[selected_index]
-
-            selected_label = st.selectbox(
-                "차트 볼 종목 선택",
-                chart_labels,
-                index=selected_index,
-            )
-            dropdown_index = chart_labels.index(selected_label)
-            if dropdown_index != selected_index:
-                selected_index = dropdown_index
-                st.session_state["selected_chart_index"] = selected_index
-                st.session_state["selected_chart_code"] = chart_codes[selected_index]
-
+        if selected_label != "선택하세요":
+            selected_index = chart_labels.index(selected_label)
             selected_row = df.iloc[selected_index]
             selected_name = str(selected_row["종목명"])
             ticker_code = str(selected_row["종목코드"]).strip().zfill(6)
             score = selected_row["점수"]
-            st.caption(f"현재: {selected_index + 1} / {len(chart_codes)}")
-            st.caption(f"선택 종목: {selected_name} / {ticker_code} / {score}점")
 
             # ── 검증용 태그 ────────────────────────────────────
             box_label = _box_label(score)
