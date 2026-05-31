@@ -1,8 +1,9 @@
 """
-streamlit_app.py — v11.5
+streamlit_app.py — v11.6
 박스권 스캐너 컨트롤룸
 
 변경 이력:
+  v11.6 - 박스권 후보 HTML 테이블 wheel 스크롤 42px 단위 제어
   v11.5 - 점수 신뢰도 검증 데이터 수집 기능 추가
           차트 하단 판단 버튼 (👍/🤔/👎) 추가
           validation_log session_state 누적 저장 (중복 overwrite)
@@ -857,10 +858,23 @@ def _render_candidate_table(df):
             </tbody>
           </table>
         </div>
+        <script>
+          const wrap = document.querySelector('.candidate-table-wrap');
+          const rowHeight = 42;
+
+          if (wrap) {{
+            wrap.addEventListener('wheel', function(e) {{
+              e.preventDefault();
+
+              const direction = e.deltaY > 0 ? 1 : -1;
+              wrap.scrollTop += direction * rowHeight;
+            }}, {{ passive: false }});
+          }}
+        </script>
         </body>
         </html>
         """
-    components.html(html_table, height=table_height, scrolling=True)
+    components.html(html_table, height=table_height, scrolling=False)
 
 
 def _merge_result_rows(existing_rows, new_df):
