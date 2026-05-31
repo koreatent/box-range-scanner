@@ -1,341 +1,332 @@
+[README.md](https://github.com/user-attachments/files/28436672/README.md)
 # 박스권 스캐너 컨트롤룸
 
-한국 주식시장(KOSPI / KOSDAQ)에서 박스권 종목을 자동 탐지하는 스캐너.  
-점수 기반 필터링 → 캔들 차트 확인 → 사용자 검증 기록까지 한 화면에서 처리.
+한국 주식시장(KOSPI / KOSDAQ / ALL)에서 박스권 후보를 스캔하고, TOP5 추천 카드, 후보 테이블, 캔들 차트, 사용자 검증 기록까지 한 화면에서 확인하는 Streamlit 앱입니다.
 
-🔗 **배포 주소**: https://appapppy-arrvupjezplekjddatmdmg.streamlit.app
+배포 주소: https://appapppy-arrvupjezplekjddatmdmg.streamlit.app
 
----
-
-> ⚠️ **면책 조항 (Disclaimer)**
->
-> 본 스캐너는 **참고용 도구**입니다.
-> 제공되는 점수 및 신호는 알고리즘 기반 분석 결과이며,
-> **투자 권유 또는 매매 추천이 아닙니다.**
->
-> 모든 투자 판단과 그에 따른 손익 책임은 **전적으로 투자자 본인**에게 있습니다.
-> 본 도구의 사용으로 발생한 손실에 대해 개발팀은 어떠한 책임도 지지 않습니다.
+> Disclaimer  
+> 이 도구는 참고용 분석 도구입니다. 제공되는 점수, 신호, 후보 목록은 알고리즘 기반 분석 결과이며 투자 권유나 매매 추천이 아닙니다. 모든 투자 판단과 책임은 사용자 본인에게 있습니다.
 
 ---
 
-## 📁 파일 구조
+## 현재 상태 요약
 
-```
-box-range-scanner/
-├─ streamlit_app.py       ← UI 메인
-├─ box_range_scanner.py   ← 스캔 엔진 모듈 (v10.0)
+- KRX Open API 기반 ticker / 가격 데이터 연결 완료
+- KOSPI, KOSDAQ, ALL 통합 스캔 검증 완료
+- KRX 실패 시 FDR, pykrx, cache, fallback 순서 유지
+- 전체 스캔 chunk 자동 이어달리기 및 완료 판정 안정화
+- Streamlit Cloud 배포용 secrets / `.env` 분리
+- 종목명 매핑 보정 완료
+- 차트 데이터도 KRX_API 우선 조회
+- 후보 테이블 HTML 렌더링 및 42px 단위 wheel 스크롤 적용
+
+---
+
+## 파일 구조
+
+```text
+Box/
+├─ streamlit_app.py          # Streamlit UI 메인
+├─ box_range_scanner.py      # 박스권 스캔 엔진
 ├─ modules/
-│  └─ krx_api.py          ← KRX Open API fetch 모듈
-├─ test_krx_api.py        ← KRX API 단독 호출 테스트
-├─ requirements.txt       ← 설치 목록
-├─ .env.example           ← 환경변수 예시
-└─ README.md              ← 이 파일
+│  └─ krx_api.py             # KRX Open API 데이터 fetch 모듈
+├─ test_krx_api.py           # KRX API 단독 호출 테스트
+├─ requirements.txt          # 배포/실행 패키지
+├─ .env.example              # 환경변수 예시
+├─ .gitignore                # 민감정보/캐시/로그 제외
+└─ README.md
 ```
+
+로컬 실행 중 생성될 수 있는 `.env`, `.streamlit/secrets.toml`, `ticker_cache.csv`, `validation_log.csv`, `*.log`, `__pycache__/` 등은 Git 업로드 대상이 아닙니다.
 
 ---
 
-## 🚀 로컬 실행
+## 설치 및 실행
 
 ```bash
 pip install -r requirements.txt
 streamlit run streamlit_app.py
 ```
 
-### KRX API 단독 테스트
+KRX API 단독 테스트:
 
 ```bash
 python test_krx_api.py --market KOSPI --date 20260430
 python test_krx_api.py --market KOSDAQ --date 20260430
 ```
 
----
+문법 확인:
 
-## 🏪 시장 선택
-
-사이드바에서 스캔할 시장을 선택합니다.
-
-| 옵션 | 설명 |
-|------|------|
-| KOSPI | 코스피 전종목 |
-| KOSDAQ | 코스닥 전종목 |
-| ALL | KOSPI + KOSDAQ 전체 병합 (종목코드 순 정렬) |
-
----
-
-## 📅 분석 기간
-
-분석 기간은 **90일 고정**입니다.  
-차트 기간 / 스캔 기간 / validation context가 모두 90일 기준으로 동작합니다.
-
----
-
-## 🔍 스캔 모드
-
-### ⚡ 빠른 스캔 (후보군)
-- 거래량 상위 종목 기준 (사이드바에서 수량 설정)
-- pykrx 기반 당일 거래량 상위 자동 수집
-- 빠르게 결과 확인 가능
-
-### 🔍 전체 스캔 (전종목)
-- 선택한 시장 전종목 대상
-- 점수 범위 슬라이더 (min ~ max) 설정 가능
-- chunk 단위 자동 이어달리기 (Streamlit Cloud 장시간 실행 안정화)
-- 중단 시 resume 버튼으로 이어서 재개 가능
-
----
-
-## 🔌 데이터 소스 구조 (멀티소스 fallback)
-
-어떤 상황에서도 멈추지 않도록 데이터 소스를 순차 시도합니다.
-
-### ticker 확보 순서
-```
-1. KRX Open API
-2. FDR StockListing
-3. pykrx
-4. 로컬 ticker_cache.csv
-5. fallback (시장별 고정 종목 25개)
+```bash
+python -m py_compile streamlit_app.py box_range_scanner.py modules/krx_api.py
 ```
 
-### 가격 데이터 확보 순서
-```
-1. KRX Open API
-2. 런타임 가격 캐시
-3. pykrx fallback
-4. 최종 fallback (FDR / yfinance 계열)
-```
-
-> 한 스캔 내에서 소스는 단일 고정 — 종목별로 소스를 섞지 않습니다.
-
 ---
 
-## 🔐 KRX API 만료일 관리
+## KRX API 설정
 
-KRX Open API는 현재 1개월 사용기간으로 승인되어 있으므로, 운영 중 만료일을 별도로 관리합니다.  
-만료일은 앱 코드에 하드코딩하지 않고, README/운영 메모에서만 관리합니다.
+API 키는 코드에 직접 넣지 않습니다.
 
-### KRX API 설정
-
-로컬 실행 시 `.env.example`을 참고해 프로젝트 루트에 `.env` 파일을 만들고 인증키를 설정합니다.
+로컬 개발에서는 프로젝트 루트에 `.env`를 만들고 아래 값을 설정합니다.
 
 ```env
 KRX_API_KEY=your_krx_open_api_key_here
 ```
 
-Streamlit Cloud 배포 시에는 저장소에 `.env`를 올리지 않고, 앱 설정의 Secrets에 아래 값을 등록합니다.
+Streamlit Cloud에서는 앱 설정의 Secrets에 아래처럼 등록합니다.
 
 ```toml
 KRX_API_KEY = "your_krx_open_api_key_here"
 ```
 
-KOSDAQ API가 별도 키로 승인된 경우에만 선택적으로 아래 환경변수를 추가합니다.
+시장별 키가 별도로 필요한 경우 선택적으로 사용할 수 있습니다.
 
 ```env
+KRX_API_KEY_KOSPI=your_kospi_api_key_here
 KRX_API_KEY_KOSDAQ=your_kosdaq_api_key_here
 ```
 
-### 현재 승인 API
-
-| API | 상태 | 만료일 |
-|------|------|------|
-| 유가증권 일별매매정보 | 승인 완료 | 2026/06/03 |
-| 코스닥 종목기본정보 | 승인 완료 | 2026/06/05 |
-
-### 추가 승인 예정 API
-
-| API | 상태 |
-|------|------|
-| 코스닥 일별매매정보 | 승인 예정 |
-| ETF 일별매매정보 | 승인 예정 |
-| ETN 일별매매정보 | 승인 예정 |
-| 유가증권 종목기본정보 | 승인 예정 |
-| 코넥스 일별매매정보 | 승인 예정 |
-| 코넥스 종목기본정보 | 승인 예정 |
-
-### 운영 체크
-
-- 만료 7일 전 KRX Open API 마이페이지에서 사용기간 연장 또는 재승인 여부 확인
-- 신규 승인 API는 승인 완료 후 실제 endpoint 단독 호출 테스트 실행
-- 인증키는 `.env` 또는 환경변수로만 관리하고 코드에 직접 입력하지 않음
-- 만료 또는 권한 문제 발생 시 KRX 응답은 `401 Unauthorized API Call`로 표시될 수 있음
-- 앱/테스트 로그에서 `market`, `api_id`, `url`, `401` 여부를 확인해 어떤 API 권한 문제인지 구분
+실제 API 키는 GitHub에 올리지 않습니다.
 
 ---
 
-## ✅ v12.x KRX 통합 검증 결과
+## KRX API 만료일 관리
 
-### KOSPI 단독
+KRX Open API는 승인 기간이 제한되어 있으므로 운영 메모로 만료일을 관리합니다. 만료일은 앱 코드에 하드코딩하지 않습니다.
+
+현재 확인된 만료일:
+
+| API | 만료일 |
+| --- | --- |
+| 유가증권 일별매매정보 | 2026/06/03 |
+| 코스닥 종목기본정보 | 2026/06/05 |
+
+추가 승인 예정 API:
+
+- 코스닥 일별매매정보
+- ETF 일별매매정보
+- ETN 일별매매정보
+- 유가증권 종목기본정보
+- 코넥스 일별매매정보
+- 코넥스 종목기본정보
+
+만료 또는 권한 문제가 발생하면 `401 Unauthorized API Call` 로그를 우선 확인합니다. 로그에는 `market`, `api_id`, `url`, `status_code`를 확인할 수 있게 남기되 실제 API 키는 출력하지 않습니다.
+
+---
+
+## 데이터 소스 우선순위
+
+### Ticker 수집
+
+```text
+1. KRX_API
+2. FDR StockListing
+3. PYKRX
+4. 로컬 ticker_cache.csv
+5. 최종 fallback
+```
+
+ALL 모드는 KOSPI와 KOSDAQ을 각각 수집한 뒤 종목코드와 종목명 map을 함께 병합합니다. KRX 기준일이 휴장일이거나 빈 데이터이면 최대 10일 전까지 순차 재시도합니다.
+
+### 가격 데이터
+
+```text
+1. KRX_API
+2. CACHE
+3. PYKRX_FALLBACK
+4. FALLBACK
+```
+
+스캔 본체와 차트 조회 모두 KRX_API를 우선 사용합니다. KRX 가격 데이터가 비어 있거나 실패할 때만 fallback 경로를 사용합니다.
+
+---
+
+## 스캔 모드
+
+### 빠른 스캔
+
+- 거래량 상위 후보군 기준으로 빠르게 스캔
+- KOSPI / KOSDAQ / ALL 선택 가능
+- 최종 결과에는 종목코드와 종목명이 보정되어 표시됨
+
+### 전체 스캔
+
+- 선택 시장 전체 종목 대상
+- chunk 단위 실행
+- chunk 완료 후 자동 rerun으로 다음 chunk 이어달리기
+- 사용자가 직접 재개 버튼을 반복해서 누르지 않아도 완료까지 진행
+- 실패/스킵 종목도 “시도 완료”로 계산
+
+완료 판정 기준:
+
+```text
+scan_processed + scan_fail >= scan_total
+```
+
+새 전체 스캔을 시작하면 이전 partial/session 상태를 초기화합니다. 단, `validation_log`는 유지합니다.
+
+---
+
+## 분석 기준
+
+- 분석기간은 앱 코드의 `analysis_days` 고정값을 사용합니다.
+- 현재 코드 기준: `analysis_days = 95`
+- 차트, 스캔 설명, validation context도 같은 기간 값을 사용합니다.
+- 점수 계산 로직과 박스권 판단 로직은 `run_scan` 엔진에서 처리합니다.
+
+---
+
+## 결과 화면
+
+### TOP5 카드
+
+- 점수 내림차순, 동점 시 거래량 기준 정렬
+- 사용자 검증 기록이 있으면 최근 검증 라벨 표시
+- 검증 기록은 현재 조건 기준으로 해석하며 영구 제외 목록으로 사용하지 않음
+
+### 후보 테이블
+
+표시 컬럼:
+
+- 종목코드
+- 종목명
+- 점수
+- 거래량
+- 이유
+- 돌파신호
+
+후보 테이블은 HTML/CSS 기반으로 렌더링됩니다. 내부 `.candidate-table-wrap` 영역이 직접 스크롤을 담당하며, wheel 이벤트를 42px 단위로 제어해 한 행씩 읽기 쉽게 조정했습니다.
+
+### 차트
+
+- KRX_API 가격 데이터를 우선 사용
+- 캔들 차트 + MA20 + MA60
+- 거래량 보조 차트
+- 선택 dropdown에는 종목명이 실제 이름으로 표시됨
+- 차트 조회 로그에는 `chart_source`, `selected_code`, `selected_name`, `market`, `row_count`를 확인할 수 있음
+
+---
+
+## 사용자 검증 기록
+
+차트를 보고 사용자가 직접 판단을 남길 수 있습니다.
+
+- 박스권 맞음
+- 애매
+- 박스권 아님
+
+특징:
+
+- 동일 조건의 동일 종목은 최신 판단으로 overwrite
+- `validation_log.csv` 저장/다운로드 시 Excel 한글 깨짐 방지를 위해 `utf-8-sig` 사용
+- validation_log 초기화 버튼으로 UI 기록 초기화 가능
+- Git 업로드 대상 아님
+
+---
+
+## 후보 비율 해석
+
+후보 비율이 높을 때는 slider를 자동 변경하지 않고 점수 분포와 권고 문구만 표시합니다.
+
+권장 해석:
+
+```text
+80점 이상: 집중 검토
+70~79점: 실전 검토 후보
+60~69점: 넓게 관찰
+40~80점: 후보가 많을 수 있음
+```
+
+점수 계산 로직은 README나 UI 권고와 별개로 변경하지 않습니다.
+
+---
+
+## KRX 통합 검증 결과
+
+### KOSPI
+
 - `ticker_source = KRX_API`
 - `price_source = KRX_API`
-- 전체 스캔 완료, fallback 제한 모드 없음
+- 총 대상 약 948~949개
+- fallback 제한 모드 없음
+- TOP5 / 후보 테이블 / 차트 정상 출력
 
-### KOSDAQ 단독
+### KOSDAQ
+
 - `ticker_source = KRX_API`
 - `price_source = KRX_API`
 - `scan_total = 1823`
 - `scan_processed = 1820`
 - `scan_fail = 3`
-- `chunk = 19 / 19 완료`
-- TOP5 / 테이블 / 차트 정상 출력
+- `chunk = 19 / 19` 완료
+- fallback 제한 모드 없음
+- TOP5 정상 출력
 
-### ALL 통합
+### ALL
+
 - `ticker_source = KRX_API`
 - `price_source = KRX_API`
 - `scan_total = 2771`
 - `scan_processed = 2768`
 - `scan_fail = 3`
-- `chunk = 28 / 28 완료`
+- `chunk = 28 / 28` 완료
 - fallback 제한 모드 없음
-- 후보 `626개`, 후보 비율 `22.6%`
+- 후보 626개
+- 후보 비율 22.6%
 - TOP5 / 테이블 / 차트 정상 출력
 
 ---
 
-## 🖥️ 컨트롤룸 UI
+## Streamlit Cloud 배포 체크리스트
 
-결과 상단에 현재 데이터 수집 상태를 한 줄 배지로 표시합니다.
+배포 전 확인:
 
-| 배지 | 내용 |
-|------|------|
-| 시장 | KOSPI / KOSDAQ / ALL |
-| ticker 소스 | KRX_API / FDR / PYKRX / CACHE / FALLBACK |
-| 가격 소스 | KRX_API / CACHE / PYKRX_FALLBACK / FALLBACK |
-| 모드 | 전체 스캔 / 빠른 스캔 |
-| 캐시 | 캐시 사용 시 날짜 표시 |
+- `.env` 업로드 금지
+- `.streamlit/secrets.toml` 업로드 금지
+- `ticker_cache.csv` 업로드 금지
+- `validation_log.csv` 업로드 금지
+- `*.log` 업로드 금지
+- `__pycache__/`, `*.pyc` 업로드 금지
+- GitHub에는 코드, README, requirements, `.env.example`, `.gitignore`만 포함
 
-### 상태별 컬러
-| 상태 | 표시 | 의미 |
-|------|------|------|
-| ✅ 정상 | 초록 | KRX/FDR/PYKRX 기반 데이터 |
-| ⚠️ 경고 | 노랑 | 캐시 데이터 사용 중 |
-| 🚨 위기 | 빨강 | fallback 종목 기준 제한 모드 |
+배포 후 확인:
 
----
-
-## 📊 결과 화면
-
-### 🏆 TOP 5 카드
-- 점수 + 거래량 기준 상위 5개 카드 표시
-- 각 카드에 판단 라벨 표시 (🟢 / 🟡 / 🔴)
-- 돌파신호 + 감점 이유 포함
-
-### 🧪 검증 요약 통계
-테이블 위에 점수 구간별 분포 한눈에 표시:
-```
-🟢 80점 이상: N개   🟡 70~79점: N개   🔴 70점 미만: N개
-```
-
-### 📋 박스권 후보 테이블
-
-| 컬럼 | 설명 |
-|------|------|
-| 종목코드 | KRX 종목코드 |
-| 종목명 | 종목 이름 |
-| 점수 | 박스권 점수 (0~100, 높을수록 박스권) |
-| 거래량 | 최근 거래량 |
-| 이유 | 감점 사유 또는 "박스권 안정" |
-| 돌파신호 | 🟢 상단돌파임박 / 🟡 박스권상단 / ⚪ 박스권중립 / 🔴 하단이탈임박 |
+- Secrets에 `KRX_API_KEY` 등록
+- KOSPI 전체 스캔에서 ticker/price source가 `KRX_API`인지 확인
+- KOSDAQ 전체 스캔에서 ticker/price source가 `KRX_API`인지 확인
+- ALL 통합 스캔에서 fallback 제한 모드가 없는지 확인
+- TOP5 / 후보 테이블 / 차트 / validation_log 동작 확인
 
 ---
 
-## 📈 차트 기능
+## 문제 해결
 
-종목 선택 시 일봉 캔들스틱 차트 표시.
-
-- **상단**: 캔들스틱 (상승=빨강 / 하락=파랑) + MA20🟣 + MA60🟢
-- **하단**: 거래량 보조 차트
-- **검증 태그**: 점수 + 판단 라벨 (🟢/🟡/🔴) 나란히 표시
-- **체크리스트**: 박스권 판단 기준 3가지 expander
-
----
-
-## 🔖 점수 기준 (연속 점수 체계)
-
-감점은 각 조건을 선형 보간으로 계산합니다 (최대 각 33.3점).
-
-| 조건 | 이상 기준 | 위험 기준 |
-|------|-----------|-----------|
-| 변동폭 (고가-저가 / 평균가) | ≤ 10% | ≥ 40% |
-| 변동성 (일일 수익률 표준편차) | ≤ 1% | ≥ 4% |
-| MA 기울기 (상대값) | ≤ 0.3% | ≥ 1.5% |
-
-### 판단 라벨 기준
-| 점수 | 라벨 | 의미 |
-|------|------|------|
-| 80점 이상 | 🟢 박스권 가능성 높음 | 엔진 기준 신뢰 구간 |
-| 70~79점 | 🟡 애매 구간 | 경계선, 차트 직접 확인 필요 |
-| 70점 미만 | 🔴 박스권 아님 | 추세 진행 중 가능성 높음 |
+| 증상 | 확인할 것 |
+| --- | --- |
+| `401 Unauthorized API Call` | API 키, API 승인 상태, 만료일, market별 endpoint |
+| KRX 데이터가 비어 있음 | 휴장일 여부, 기준일 보정 로그, 최대 10일 재시도 결과 |
+| ticker source가 FALLBACK | KRX/FDR/pykrx/cache 실패 로그 확인 |
+| 종목명이 코드로 표시됨 | ticker name map 생성/병합 로그 확인 |
+| 차트 데이터 없음 | `chart_source`, `row_count`, 선택 종목코드 확인 |
+| 후보가 너무 많음 | 점수 구간 분포를 보고 70~80 또는 60~80 범위 검토 |
+| py_compile 권한 오류 | `__pycache__` 잠금 또는 권한 문제 확인 |
 
 ---
 
-## 📝 점수 신뢰도 검증 기능 (v11.4~)
+## 버전 메모
 
-차트를 보고 사용자가 직접 판단을 기록하는 기능.
-
-### 사용 흐름
-1. 종목 선택 → 차트 확인
-2. 👍 맞음 / 🤔 애매 / 👎 아님 버튼 클릭
-3. 검증 결과 섹션에서 구간별 통계 확인
-4. CSV 다운로드 → 튜닝 데이터로 활용
-
-### 신뢰도 판단 기준
-| 구간 | 정상 패턴 |
-|------|-----------|
-| 🟢 80점 이상 | 맞음 비율 70% 이상이면 엔진 정상 |
-| 🟡 70~79점 | 애매 비율이 높아야 정상 |
-| 🔴 70점 미만 | 아님 비율이 높아야 정상 |
-
-> 패턴이 위와 다르면 → v11.6 점수 튜닝 단계 진입
-
-### 안정화 가드레일
-- 검증 데이터 20개 미만 시 경고 표시
-- 동일 종목 재판단 시 최신 기록으로 overwrite
-- CSV 다운로드 시 한글 깨짐 없음 (utf-8-sig)
-- 검증 초기화 버튼으로 로그 리셋 가능
+| 버전 | 주요 내용 |
+| --- | --- |
+| v11.6 | KRX_API 통합(ticker/가격), 기준일 10일 재시도, 상태 UI 개선, 후보 테이블 wheel 스크롤 42px 단위 제어 |
+| v11.5 | validation_log 기반 사용자 검증, TOP5 라벨, CSV 저장 개선 |
 
 ---
 
-## ❗ 오류 대응
+## 팀 메모
 
-| 증상 | 원인 | 해결 |
-|------|------|------|
-| 경고 배지 표시 | 캐시 데이터 사용 중 | 평일 장 마감 후 재실행 |
-| 위기(빨강) 배지 표시 | 모든 소스 실패 → fallback | 잠시 후 재시도 |
-| 종목명 "Empty DataFrame" | pykrx가 DataFrame 반환 | box_range_scanner.py v10.0 최신본으로 업데이트 |
-| `too many values to unpack` | 구버전 box_range_scanner.py | v10.0으로 업데이트 |
-| `ModuleNotFoundError` | 패키지 미설치 | `pip install -r requirements.txt` |
-| 결과 없음 | 점수 범위가 너무 좁음 | 사이드바 슬라이더 조정 |
-
----
-
-## 📌 버전 히스토리
-
-| 버전 | 주요 변경 |
-|------|-----------|
-| **v11.5** | 점수 신뢰도 검증 데이터 수집 — 판단 버튼(👍🤔👎), 구간별 통계, CSV 다운로드, 안정화 가드레일 (샘플 경고 / toast 피드백 / 신뢰도 가이드) |
-| | [버그픽스] 종목명 "Empty DataFrame" 깨짐 수정 — _get_ticker_name() DataFrame/Series 반환 방어, df["종목명"] astype(str) 보장 |
-| **v11.4** | 점수 vs 차트 검증 UI — _box_label() 판단 라벨, TOP5 카드 라벨, 검증 요약 통계, 체크리스트 expander |
-| **v11.3** | 차트 캔들스틱 전환 — 일봉 캔들(상승=빨강/하락=파랑) + 거래량 보조차트, MA20/MA60 이평선 추가 |
-| **v11.2** | 점수 필터 범위 슬라이더 — 단일 threshold → min~max 범위 선택, score_max 화면 필터링 |
-| **v11.1** | chunk 단위 전체 스캔 + 자동 이어달리기 — loop guard (current_chunk_index / chunk_executing) |
-| **v10.2** | resume / clear 버튼 trigger 기반 안정화, partial_results records 구조 일관화 |
-| **v10.0** | Resume Scan 구현 — processed_tickers 기반 이어달리기, 진행률 offset 반영 |
-| **v9.1** | TOP 5 카드 UX 리터칭 (2열 그리드, 점수 강도 이모지), 전수 스캔 중간 저장 + rerun 복구 |
-| **v9.0** | 입력 레이어 리팩토링 — 멀티소스 fallback (FDR→NAVER→yfinance→캐시), 시장 선택 UI, 컨트롤룸 배지, 상태별 컬러 |
-| **v8.3** | threshold 슬라이더, 튜닝 권고 배너 |
-| **v8.2** | 점수 체계 연속화 (0~100 선형 보간) |
-| **v8.1** | get_market_ohlcv_by_ticker 기반 전환, processed_count 분리 |
-| **v8.0** | 전체 스캔 모드 추가 |
-| **v7.2** | 거래량 기준 후보 생성 |
-| **v7.0** | 시총 상위 100개 자동 후보 생성 |
-| **v6.0** | 돌파신호 추가 |
-
----
-
-## 👥 팀 테트라포드
-
-| 역할 | 담당 |
-|------|------|
-| 🎯 지휘 / 선장 | 디예몬 |
-| 🧠 전략 / 검증 | 지피대원 |
-| 🔧 구현 / 작업 | 클로대원 |
+- 구현 담당 / 코드 실행 / 개발 보조: 꼬덱(KODEK)
+- 상위 담당: 지피팀장
+- 검증 협업: 클로팀장
+- 시각화 협업: 쩸이팀장
+- 최종 결정: 디예몬
