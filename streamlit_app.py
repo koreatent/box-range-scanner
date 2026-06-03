@@ -765,25 +765,28 @@ def _render_candidate_table(df):
             margin: 0;
             padding: 0;
             background: transparent;
-            color: inherit;
+            color: #111827;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         }}
         .candidate-table-wrap {{
             height: 420px;
             overflow-y: auto;
             overflow-x: auto;
-            border: 1px solid rgba(148, 163, 184, 0.28);
+            background: #ffffff;
+            border: 1px solid #d1d5db;
             border-radius: 8px;
             scroll-snap-type: y proximity;
             scrollbar-gutter: stable;
+            scroll-padding-left: 0;
         }}
         .candidate-table {{
             width: 100%;
-            min-width: 920px;
+            min-width: 760px;
             border-collapse: collapse;
+            table-layout: fixed;
             font-size: 14px;
             line-height: 1.35;
-            color: rgb(226, 232, 240);
+            color: #111827;
         }}
         .candidate-table thead th {{
             position: sticky;
@@ -793,37 +796,55 @@ def _render_candidate_table(df):
             padding: 0 12px;
             background: rgb(17, 24, 39);
             border-bottom: 1px solid rgba(148, 163, 184, 0.35);
+            color: #f9fafb;
             text-align: left;
             white-space: nowrap;
         }}
+        .candidate-table thead th:nth-child(1) {{ width: 12%; }}
+        .candidate-table thead th:nth-child(2) {{ width: 18%; }}
+        .candidate-table thead th:nth-child(3) {{ width: 8%; }}
+        .candidate-table thead th:nth-child(4) {{ width: 13%; }}
+        .candidate-table thead th:nth-child(5) {{ width: 32%; }}
+        .candidate-table thead th:nth-child(6) {{ width: 17%; }}
         .candidate-table tbody tr {{
             height: 42px;
+            background: #ffffff;
             scroll-snap-align: start;
-            border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+            border-bottom: 1px solid #e5e7eb;
         }}
         .candidate-table tbody tr:nth-child(even) {{
-            background: rgba(148, 163, 184, 0.06);
+            background: #f8fafc;
         }}
         .candidate-table tbody tr:hover {{
-            background: rgba(59, 130, 246, 0.14);
+            background: #e0f2fe;
         }}
         .candidate-table td {{
             height: 42px;
             padding: 0 12px;
             vertical-align: middle;
             white-space: nowrap;
+            color: #111827;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }}
         .candidate-table td.reason {{
-            max-width: 320px;
             overflow: hidden;
             text-overflow: ellipsis;
         }}
         .candidate-table td.code {{
             font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            color: #0f172a;
+            font-weight: 600;
         }}
         .candidate-table td.score,
         .candidate-table td.volume {{
             text-align: right;
+            color: #0f172a;
+            font-weight: 700;
+        }}
+        .candidate-table td.signal {{
+            color: #111827;
+            font-weight: 600;
         }}
         @media (max-width: 760px) {{
             .candidate-table-wrap {{
@@ -831,7 +852,7 @@ def _render_candidate_table(df):
             }}
             .candidate-table {{
                 font-size: 13px;
-                min-width: 820px;
+                min-width: 720px;
             }}
             .candidate-table thead th,
             .candidate-table td {{
@@ -863,6 +884,7 @@ def _render_candidate_table(df):
           const rowHeight = 42;
 
           if (wrap) {{
+            wrap.scrollLeft = 0;
             wrap.addEventListener('wheel', function(e) {{
               e.preventDefault();
 
