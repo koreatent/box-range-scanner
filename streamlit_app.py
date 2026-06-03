@@ -48,13 +48,11 @@ streamlit_app.py — v11.6
   v8.3 - threshold 슬라이더, 튜닝 권고 배너
 """
 
-import html
 import os
 from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
-import streamlit.components.v1 as components
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -723,180 +721,63 @@ def _render_price_flow_chart(chart_df):
 def _render_candidate_table(df):
     cols = ["종목코드", "종목명", "점수", "거래량", "이유", "돌파신호"]
     table_df = df[[col for col in cols if col in df.columns]].copy()
+    if table_df.empty:
+        st.info("표시할 후보가 없습니다.")
+        return
 
-    def esc(value):
+    code_col, name_col, score_col, volume_col, reason_col, signal_col = cols
+
+    def _short_reason(value):
         if pd.isna(value):
             return ""
-        return html.escape(str(value))
+        text = str(value).strip()
+        replacements = {
+            "변동폭 과다, 변동성 주의": "변동성 주의",
+            "변동폭 주의, 변동성 과다": "변동성 과다",
+            "변동폭 과다, 변동성 과다": "변동성 과다",
+            "박스권 안정": "박스권 안정",
+        }
+        if text in replacements:
+            return replacements[text]
+        if "," in text and len(text) > 12:
+            return text.split(",")[-1].strip()
+        return text if len(text) <= 18 else text[:17] + "…"
 
-    rows_html = []
-    for _, row in table_df.iterrows():
-        code = esc(str(row.get("종목코드", "")).zfill(6))
-        name = esc(row.get("종목명", ""))
-        score = esc(row.get("점수", ""))
-        volume_raw = row.get("거래량", "")
-        try:
-            volume = f"{int(volume_raw):,}"
-        except Exception:
-            volume = esc(volume_raw)
-        reason = esc(row.get("이유", ""))
-        signal = esc(row.get("돌파신호", ""))
-        rows_html.append(
-            f"""
-            <tr>
-              <td class="code">{code}</td>
-              <td class="name">{name}</td>
-              <td class="score">{score}</td>
-              <td class="volume">{volume}</td>
-              <td class="reason">{reason}</td>
-              <td class="signal">{signal}</td>
-            </tr>
-            """
-        )
+    def _short_signal(value):
+        if pd.isna(value):
+            return ""
+        text = str(value).strip()
+        replacements = {
+            "○ 박스권중립": "○ 중립",
+            "⚪ 박스권중립": "⚪ 중립",
+            "🟡 박스권상단": "🟡 상단",
+            "🔴 하단이탈임박": "🔴 하단이탈",
+            "🟢 상단돌파임박": "🟢 상단돌파",
+        }
+        return replacements.get(text, text)
 
-    table_height = 430
-    html_table = f"""
-        <!doctype html>
-        <html>
-        <head>
-        <meta charset="utf-8">
-        <style>
-        html, body {{
-            margin: 0;
-            padding: 0;
-            background: transparent;
-            color: #111827;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        }}
-        .candidate-table-wrap {{
-            height: 420px;
-            overflow-y: auto;
-            overflow-x: auto;
-            background: #ffffff;
-            border: 1px solid #d1d5db;
-            border-radius: 8px;
-            scroll-snap-type: y proximity;
-            scrollbar-gutter: stable;
-            scroll-padding-left: 0;
-        }}
-        .candidate-table {{
-            width: 100%;
-            min-width: 760px;
-            border-collapse: collapse;
-            table-layout: fixed;
-            font-size: 14px;
-            line-height: 1.35;
-            color: #111827;
-        }}
-        .candidate-table thead th {{
-            position: sticky;
-            top: 0;
-            z-index: 1;
-            height: 42px;
-            padding: 0 12px;
-            background: rgb(17, 24, 39);
-            border-bottom: 1px solid rgba(148, 163, 184, 0.35);
-            color: #f9fafb;
-            text-align: left;
-            white-space: nowrap;
-        }}
-        .candidate-table thead th:nth-child(1) {{ width: 12%; }}
-        .candidate-table thead th:nth-child(2) {{ width: 18%; }}
-        .candidate-table thead th:nth-child(3) {{ width: 8%; }}
-        .candidate-table thead th:nth-child(4) {{ width: 13%; }}
-        .candidate-table thead th:nth-child(5) {{ width: 32%; }}
-        .candidate-table thead th:nth-child(6) {{ width: 17%; }}
-        .candidate-table tbody tr {{
-            height: 42px;
-            background: #ffffff;
-            scroll-snap-align: start;
-            border-bottom: 1px solid #e5e7eb;
-        }}
-        .candidate-table tbody tr:nth-child(even) {{
-            background: #f8fafc;
-        }}
-        .candidate-table tbody tr:hover {{
-            background: #e0f2fe;
-        }}
-        .candidate-table td {{
-            height: 42px;
-            padding: 0 12px;
-            vertical-align: middle;
-            white-space: nowrap;
-            color: #111827;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }}
-        .candidate-table td.reason {{
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }}
-        .candidate-table td.code {{
-            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-            color: #0f172a;
-            font-weight: 600;
-        }}
-        .candidate-table td.score,
-        .candidate-table td.volume {{
-            text-align: right;
-            color: #0f172a;
-            font-weight: 700;
-        }}
-        .candidate-table td.signal {{
-            color: #111827;
-            font-weight: 600;
-        }}
-        @media (max-width: 760px) {{
-            .candidate-table-wrap {{
-                max-height: 360px;
-            }}
-            .candidate-table {{
-                font-size: 13px;
-                min-width: 720px;
-            }}
-            .candidate-table thead th,
-            .candidate-table td {{
-                padding: 0 10px;
-            }}
-        }}
-        </style>
-        </head>
-        <body>
-        <div class="candidate-table-wrap">
-          <table class="candidate-table">
-            <thead>
-              <tr>
-                <th>종목코드</th>
-                <th>종목명</th>
-                <th>점수</th>
-                <th>거래량</th>
-                <th>이유</th>
-                <th>돌파신호</th>
-              </tr>
-            </thead>
-            <tbody>
-              {''.join(rows_html)}
-            </tbody>
-          </table>
-        </div>
-        <script>
-          const wrap = document.querySelector('.candidate-table-wrap');
-          const rowHeight = 42;
+    table_df[code_col] = table_df[code_col].astype(str).str.strip().str.zfill(6)
+    table_df[score_col] = pd.to_numeric(table_df[score_col], errors="coerce")
+    table_df[volume_col] = pd.to_numeric(table_df[volume_col], errors="coerce").fillna(0).astype("int64")
+    table_df[reason_col] = table_df[reason_col].apply(_short_reason)
+    table_df[signal_col] = table_df[signal_col].apply(_short_signal)
 
-          if (wrap) {{
-            wrap.scrollLeft = 0;
-            wrap.addEventListener('wheel', function(e) {{
-              e.preventDefault();
+    st.dataframe(
+        table_df,
+        use_container_width=True,
+        hide_index=True,
+        height=420,
+        column_config={
+            code_col: st.column_config.TextColumn("종목코드", width="small"),
+            name_col: st.column_config.TextColumn("종목명", width="medium"),
+            score_col: st.column_config.NumberColumn("점수", width="small", format="%d"),
+            volume_col: st.column_config.NumberColumn("거래량", width="small", format="%d"),
+            reason_col: st.column_config.TextColumn("이유", width="medium"),
+            signal_col: st.column_config.TextColumn("돌파신호", width="medium"),
+        },
+    )
+    return
 
-              const direction = e.deltaY > 0 ? 1 : -1;
-              wrap.scrollTop += direction * rowHeight;
-            }}, {{ passive: false }});
-          }}
-        </script>
-        </body>
-        </html>
-        """
-    components.html(html_table, height=table_height, scrolling=False)
 
 
 def _merge_result_rows(existing_rows, new_df):
