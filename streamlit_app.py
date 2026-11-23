@@ -1705,7 +1705,10 @@ if display_df is not None:
         st.error("스캔 중 오류 발생 — 아래는 저장된 부분 결과입니다.")
 
     if _is_partial:
-        st.warning("⚠️ 전체 스캔이 완료되기 전 중단되었습니다. 아래는 부분 결과입니다.")
+        if st.session_state.get("scan_running") and not st.session_state.get("scan_interrupted"):
+            st.info("⏳ 전체 스캔 진행 중입니다. 아래는 지금까지의 중간 결과입니다.")
+        else:
+            st.warning("⚠️ 전체 스캔이 완료되기 전 중단되었습니다. 아래는 부분 결과입니다.")
 
     if df.empty:
         if mode == "full":
