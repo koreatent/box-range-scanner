@@ -999,7 +999,6 @@ def _prepare_new_full_scan_start(days):
     _reset_scan_state_for_new_scan()
     st.session_state["scan_days"] = days
     st.session_state["scan_date"] = datetime.now().strftime("%Y-%m-%d")
-    st.session_state["scan_running"] = True
     st.session_state["scan_interrupted"] = False
     st.session_state["chunk_executing"] = False
     st.session_state["current_chunk_index"] = 0
@@ -1485,21 +1484,18 @@ if is_scan_busy:
 elif _scan_completed_for_status():
     _render_scan_status_panel(is_running=False)
 
-if is_full_scan:
-    scan_start_clicked = st.button(
-        btn_label,
-        use_container_width=True,
-        on_click=_prepare_new_full_scan_start,
-        args=(analysis_days,),
-        disabled=is_scan_busy,
-    )
-else:
-    scan_start_clicked = st.button(btn_label, use_container_width=True, disabled=is_scan_busy)
+scan_start_clicked = st.button(btn_label, use_container_width=True, disabled=is_scan_busy)
 
 if scan_start_clicked:
     if is_full_scan:
-        st.session_state["chunk_executing"] = True
-        _run_full_scan(scan_market=market_choice, score_min=score_min, score_max=score_max, resume=False, days=analysis_days)
+        _prepare_new_full_scan_start(analysis_days)
+        _run_full_scan(
+            scan_market=market_choice,
+            score_min=score_min,
+            score_max=score_max,
+            resume=False,
+            days=analysis_days,
+        )
     else:
         st.session_state["scan_days"] = analysis_days
         st.session_state["scan_date"] = datetime.now().strftime("%Y-%m-%d")
@@ -1628,6 +1624,7 @@ if st.session_state.get("trigger_resume"):
 
 if (
     st.session_state.get("scan_running")
+    and (st.session_state.get("scan_all_tickers") or st.session_state.get("scan_tickers"))
     and not st.session_state.get("chunk_executing")
     and not _is_scan_complete_by_attempts()
     and not st.session_state.get("trigger_clear")
