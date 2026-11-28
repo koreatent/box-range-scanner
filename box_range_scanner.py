@@ -1,9 +1,10 @@
 """
-box_range_scanner.py — v10.1
+box_range_scanner.py — v10.1 (앱 streamlit_app v11.7과 함께 배포)
 박스권 탐지 모듈
 
 변경 이력:
   v10.1 - run_scan() 정상/실패 중복 집계 수정 (분석 성공 후에만 processed +1)
+          점수 계산식(analyze_box) 변경 없음
   v10.0 - run_scan() 처리 완료 ticker 추적 추가
           partial_callback에 processed_tickers 전달
   v9.0 - 입력 레이어 리팩토링 (멈추지 않는 스캐너)
