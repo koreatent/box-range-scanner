@@ -1,8 +1,10 @@
 """
-box_range_scanner.py — v10.0
+box_range_scanner.py — v10.1 (앱 streamlit_app v11.7과 함께 배포)
 박스권 탐지 모듈
 
 변경 이력:
+  v10.1 - run_scan() 정상/실패 중복 집계 수정 (분석 성공 후에만 processed +1)
+          점수 계산식(analyze_box) 변경 없음
   v10.0 - run_scan() 처리 완료 ticker 추적 추가
           partial_callback에 processed_tickers 전달
   v9.0 - 입력 레이어 리팩토링 (멈추지 않는 스캐너)
@@ -376,15 +378,20 @@ def run_scan(tickers=None, progress_callback=None, score_threshold=0, price_sour
             elif not {"종가","고가","저가"}.issubset(set(df.columns)):
                 fail_count += 1
             else:
-                processed_count += 1
+                # v11.7: 분석이 끝까지 성공한 뒤에만 정상 처리로 집계
+                # (이전엔 먼저 +1 한 뒤 분석 예외 시 실패도 +1 → 1종목 2회 집계)
                 score, reason = analyze_box(df)
+                row = None
                 if score >= score_threshold:
                     signal = get_breakout_signal(df)
                     volume = int(df['거래량'].iloc[-1]) if '거래량' in df.columns else 0
-                    results.append({
+                    row = {
                         "종목코드": t, "종목명": name, "점수": score,
                         "거래량": volume, "이유": reason, "돌파신호": signal,
-                    })
+                    }
+                processed_count += 1
+                if row is not None:
+                    results.append(row)
         except Exception:
             fail_count += 1
         processed_tickers.append(t)
